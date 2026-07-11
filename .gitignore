@@ -1,0 +1,5 @@
+.claude/
+*.exe
+*.ds2res
+__pycache__/
+*.pyc
