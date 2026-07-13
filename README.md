@@ -1,10 +1,11 @@
 # DS2Fix
 
 Modernizes a legally-owned **Dungeon Siege II** install (GOG, running under Wine/Linux) — widescreen
-HUD, native 16:9 menus, fullscreen, and a "ds2fix" version label — via reversible binary patches and a
-gamescope launcher. Does **not** distribute the game; it patches an existing install in place.
+HUD, native 16:9 menus, fullscreen, campaign difficulties unlocked, and a "ds2fix" version label — via
+reversible binary patches + data-side tank mods and a gamescope launcher. Does **not** distribute the
+game; it patches an existing install in place, always from a pristine base.
 
-Status: **v0.1 (working)** — 16:9 menu + correct HUD + fullscreen + version label, all verified in-game.
+Status: **v0.1 (working)** — everything below verified in-game.
 
 ## What works
 
@@ -12,71 +13,78 @@ Status: **v0.1 (working)** — 16:9 menu + correct HUD + fullscreen + version la
 |---|---|
 | Widescreen HUD anchors correctly in gameplay | dynamic UI-canvas patch (exe) |
 | Off-screen menus fixed | dynamic UI-canvas patch (exe) |
-| Native 16:9 menu (not stretched) | MENU_169 patches force the frontend to render 16:9 (exe) |
-| Fullscreen, upscaled to monitor | `play-ds2.sh` (gamescope + FSR) |
+| Native 16:9 menu (not stretched) | `MENU_169` patches force the frontend to render 16:9 (exe) |
+| Frontend menus scaled + centered for 16:9 | tank `.gas` rect transform (`tank_edit.py`) |
+| All campaign difficulties (Merc/Vet/Elite) unlocked from the start | completion-check patch (exe) |
+| Tank data mods no longer crash the game | content-integrity CRC check disabled (exe) |
+| Non-resizable window (no resize black-screen) | window-style patch (exe) |
+| Configurable render + output resolution | `RES_W/RES_H`, `OUT_W/OUT_H` env |
+| Fullscreen, upscaled to monitor | `ds2fix.sh` / `play-ds2.sh` (gamescope + FSR) |
 | Version label reads "ds2fix 0.1" | version-string patch (exe) |
 
-## Build (apply the patches)
-
-`patcher/patch_dynamic.py <pristine-exe> <output-exe>` produces the fully-patched exe from a **pristine**
-`DungeonSiege2.exe`. Env `MENU_169=0` disables the 16:9-menu patches (leaving only the HUD/canvas fix).
+## Quick start
 
 ```
-python3 patcher/patch_dynamic.py DungeonSiege2.exe.orig DungeonSiege2.exe
+./ds2fix.sh                                   # patch (16:9) + play, 1920x1080 -> 2560x1440 (FSR)
+OUT_W=3840 OUT_H=2160 ./ds2fix.sh             # 4K output
+RES_W=1440 RES_H=1080 ./ds2fix.sh             # 4:3 render (gamescope pillarboxes)
+MENU_169=0 ./ds2fix.sh                        # native 800x600 menu (HUD/canvas fix only)
+DS2_PATCH_ONLY=1 ./ds2fix.sh                  # apply patches, don't launch
 ```
 
-Always keep a pristine backup of the original exe — it's the patch base and the restore point.
+`ds2fix.sh` **idempotently rebuilds** the patched exe + tank from a pristine base every run (safe to
+re-run; never patches an already-patched file). Override paths with `DS2_GAMEDIR` / `DS2_PRISTINE`.
 
-### What the patcher does (all in `DungeonSiege2.exe`, 32-bit PE)
-- **PATCH 0 — version label:** overwrites the format string `$MSG$Version - %S` → `$MSG$ds2fix 0.1`.
-- **PATCH 1 — dynamic UI canvas:** rewrites `UIShell::SetScreenSize` (`FUN_0073be90` @0x73be90) via a
-  trampoline into a new `.ds2fix` PE section so the UI canvas tracks the **live** main-window rect
-  (`*(0xbcb28c)`) instead of stale args → HUD + menus anchor to the real resolution.
-- **PATCH 2-6 (MENU_169) — native 16:9 menu:** force the frontend window/backbuffer to 1920×1080 (the
-  frontend otherwise hardcodes 800×600 through several paths): `CreateWindowExA` args @0x5f2220/0x5f2233,
-  the config-read `jne`s @0x5f12f0/0x5f1344, the WorldState-transition and window-creation immediates,
-  and the window-sizer choke point `FUN_005ebeba`.
+## The exe patcher (`patcher/patch_dynamic.py <pristine-exe> <out-exe>`)
 
-Currently hardcoded to **1920×1080**. Making this configurable (4:3 / 1440p / 4K) is on the roadmap.
+All patches are on the pristine 32-bit `DungeonSiege2.exe`; keep a pristine backup as the patch base.
+Env: `MENU_169` (0 disables the 16:9 menu), `RES_W`/`RES_H` (forced frontend res, default 1920×1080),
+`CHOKE`/`WS169` (fine-grained MENU_169 sub-toggles).
 
-## Run
-
-`./play-ds2.sh` — launches under **gamescope** fullscreen with FSR upscaling to the monitor. Edit the
-`WINEPREFIX` / game path and the `-W/-H` (monitor) values for your setup.
+- **Version label** — `$MSG$Version - %S` → `$MSG$ds2fix 0.1`.
+- **Dynamic UI canvas** — `UIShell::SetScreenSize` (`FUN_0073be90`) trampolined through a new `.ds2fix`
+  PE section so the canvas tracks the **live** window rect (`*(0xbcb28c)`) → HUD + menus anchor correctly.
+- **Content-integrity CRC disable** — `FUN_00699df1` → `return 1` (+ secondary verifier). The key
+  enabler: DS2 CRC-checks loaded `.gas` content (GameSpy-era anti-cheat); without this, any tank data
+  mod crashes. Disabling it unlocks all data-side mods.
+- **Auto-unlock difficulties** — `FUN_004171d7` (the `<world>_completed_<difficulty>` journal check,
+  used by both SP `CanStartWorld` and MP join) forced to "always completed" → Veteran + Elite selectable
+  from the start.
+- **Non-resizable window** — drop `WS_THICKFRAME` (`0x10ce0000`→`0x10ca0000`); DS2 never rebuilds the
+  swapchain on `WM_SIZE`, so dragging the border used to black it out.
+- **MENU_169 (native 16:9 menu)** — force the frontend window/backbuffer to `RES_W×RES_H` (it otherwise
+  hardcodes 800×600 through several paths): `CreateWindowExA` args, the config-read `jne`s, the
+  WorldState/window-creation immediates, and the window-sizer choke point `FUN_005ebeba`.
 
 ## Tank tooling (DSg2Tank / .ds2res)
 
-- `patcher/tank_parse.py <tank>` — parses the DSg2Tank directory (DirSet/FileSet) and reconstructs full
-  logical paths for every file (e.g. finds `ui/interfaces/frontend/main_menu/main_menu.gas`).
-- `patcher/tank_patch_menu.py` — in-place edits a `.gas` inside a tank (recompress + fix size/CRC/chunk
-  table). **NOTE:** DS2 validates menu-file *content* beyond the tank CRC — any content change to
-  `main_menu.gas` currently makes the game reject it and crash. A byte-identical recompress runs fine,
-  so the repack format is correct; the content-integrity check is not yet understood. **Menu-file edits
-  (button centering, hiding buttons, version-in-menu) are blocked until that's cracked.**
-- `patcher/carve.py <tank> <outdir>` — zlib-carve extraction of UI `.gas` text (no full parser needed).
+- **`patcher/tank_edit.py <tank> [scale]`** — general in-place `.gas` editor. Scales+centers the frontend
+  interfaces into the 16:9 canvas, recompresses within each file's slot, fixes size/CRC/chunk-table, and
+  bumps the `.gas` FILETIME past its compiled `dir.lqd22` cache so the engine recompiles from source.
+  Handles **multi-chunk** files correctly (each 16384-byte block = `zlib(first 16368B)` + 16 raw content
+  bytes; table = `[total, blocksize] + per-chunk[uncomp, comp, rawtail, reloff]`, 4-byte aligned after
+  the name). Requires the CRC check disabled (above).
+- `patcher/tank_parse.py <tank>` — parse the DirSet/FileSet and reconstruct logical file paths.
+- `patcher/carve.py <tank> <outdir>` — zlib-carve extraction of UI `.gas` text.
 
 ## Reverse-engineering (Ghidra, headless)
 
-`ghidra/*.java` — the headless scripts used to map the resolution/UI subsystem (setter/caller discovery,
-targeted decompile, xref/rect-writer scans). Run via `analyzeHeadless <proj> ds2 -process
-DungeonSiege2.exe -noanalysis -scriptPath ghidra -postScript <Script>.java` (project path must be
-absolute).
+`ghidra/*.java` — headless scripts used to map the subsystems. `XChase.java` (xref+decompile via
+`DS2_ADDRS`/`DS2_OUT`) and `Decomp.java` (decompile via `DS2_TARGETS`) are the workhorses. Run via
+`analyzeHeadless <proj> ds2 -process DungeonSiege2.exe -noanalysis -scriptPath ghidra -postScript X.java`.
 
 ## Known issues
-- **Menu 3D models / character avatar don't render** on the main menu (and aren't in screenshots) —
-  likely the forced-1920 frontend res affecting `object_view` rendering. Under investigation.
-- Menu-file edits crash the game (tank content-integrity check, see above).
+- **Frontend 3D hero preview** (char select/create model) renders only at 800×600 — the forced-16:9
+  frontend leaves it blank. Deeply investigated (it's an actor-cull in the `object_view` world render at
+  >800×600); parked because gdb breakpoints don't work under wow64 and static RE couldn't pin the cull.
+  Character creation is fully functional without the live model. Fallback: native-800 + gamescope upscale.
 - gamescope on KDE Wayland intermittently fails to present ("Compositor released us but we were not
   acquired") — usually resolves on alt-tab / relaunch.
 
 ## Roadmap (backlog)
-- Configurable resolution (4:3 / 16:9 / 4K)
-- Top-right "ds2fix — injected & running" overlay (MangoHud)
-- Spacebar to skip cutscenes/NIS
-- F1/F2/F3 weapon/spell loadout switching
-- Auto-unlock all campaign difficulties
-- Fix menu model rendering
-- One-click launcher/patcher with backup/restore
+- Native in-game "ds2fix 0.1" overlay during gameplay (top-right)
+- Windows-compatible packaging (patcher is Python/cross-platform; launcher is Linux/gamescope)
+- Fix the frontend hero-preview render at high res
 
 ---
 🤖 Tooling built with [Claude Code](https://claude.com/claude-code)
