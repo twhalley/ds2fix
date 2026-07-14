@@ -13,7 +13,7 @@ fullscreen on Windows.
   ds2fix restore                # revert to pristine
   ds2fix info                   # show patch state
 """
-import argparse, os, shutil, struct, subprocess, sys
+import argparse, os, re, shutil, struct, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,38 +27,136 @@ PRISTINE_SUFFIX = ".ds2fix-pristine"
 
 # ---------- install detection ----------
 def _candidate_gamedirs():
-    """Yield plausible game directories for the current OS."""
+    """Yield plausible game directories for the current OS, cheapest/most-authoritative first."""
     env = os.environ.get("DS2_GAMEDIR")
     if env:
         yield Path(env)
-    if IS_WINDOWS:
-        roots = [
-            r"C:\GOG Games\Dungeon Siege II",
-            r"C:\Program Files (x86)\GOG.com\Dungeon Siege II",
-            r"C:\Program Files (x86)\Steam\steamapps\common\Dungeon Siege 2",
-            r"C:\Program Files (x86)\Microsoft Games\Dungeon Siege II",
-        ]
-        for r in roots:
-            yield Path(r)
-    else:
-        home = Path.home()
-        # common Wine/Proton/GOG-under-Wine layouts
-        globs = [
-            "**/drive_c/Games/Dungeon Siege II",
-            "**/drive_c/GOG Games/Dungeon Siege II",
-            "**/steamapps/common/Dungeon Siege 2",
-        ]
-        search_roots = [home / ".wine", home / "Games", Path("/run/media"),
-                        home / ".local/share/Steam", home / ".steam"]
-        for sr in search_roots:
-            if not sr.exists():
-                continue
-            for g in globs:
-                try:
-                    for hit in sr.glob(g):
-                        yield hit
-                except (OSError, PermissionError):
+    yield from (_windows_dirs() if IS_WINDOWS else _linux_dirs())
+
+
+# DS2's folder name differs by store (GOG vs Steam).
+_DS2_DIRNAMES = ("Dungeon Siege II", "Dungeon Siege 2")
+
+
+def _dirs_in(root):
+    for name in _DS2_DIRNAMES:
+        yield Path(root) / name
+
+
+def _steam_common_dirs(steam_root):
+    """Yield every steamapps/common dir for a Steam root, following libraryfolders.vdf across drives."""
+    steam_root = Path(steam_root)
+    yield steam_root / "steamapps" / "common"
+    try:
+        text = (steam_root / "steamapps" / "libraryfolders.vdf").read_text(errors="ignore")
+    except OSError:
+        return
+    for m in re.finditer(r'"path"\s*"([^"]+)"', text):
+        yield Path(m.group(1).replace("\\\\", "\\")) / "steamapps" / "common"
+
+
+def _heroic_install_paths():
+    """Yield install_path entries from Heroic's GOG store (the common GOG-on-Linux launcher)."""
+    import json
+    home = Path.home()
+    for hj in (home / ".config/heroic/gog_store/installed.json",
+               home / ".var/app/com.heroicgameslauncher.hgl/config/heroic/gog_store/installed.json"):
+        try:
+            data = json.loads(hj.read_text())
+        except (OSError, ValueError):
+            continue
+        entries = data.get("installed", []) if isinstance(data, dict) else data
+        for e in entries or []:
+            ip = e.get("install_path") if isinstance(e, dict) else None
+            if ip:
+                yield Path(ip)
+
+
+def _windows_dirs():
+    import winreg, string
+    # GOG: iterate every registered GOG game, yield its recorded install path (any drive/folder).
+    for key in (r"SOFTWARE\WOW6432Node\GOG.com\Games", r"SOFTWARE\GOG.com\Games"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+                i = 0
+                while True:
+                    try:
+                        sub = winreg.EnumKey(k, i); i += 1
+                    except OSError:
+                        break
+                    try:
+                        with winreg.OpenKey(k, sub) as gk:
+                            yield Path(winreg.QueryValueEx(gk, "path")[0])
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    # Steam: SteamPath -> libraryfolders.vdf (all libraries).
+    for hive, key in ((winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam"),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                steam = winreg.QueryValueEx(k, "SteamPath" if hive == winreg.HKEY_CURRENT_USER else "InstallPath")[0]
+            for common in _steam_common_dirs(steam):
+                yield from _dirs_in(common)
+        except OSError:
+            continue
+    # fallback: default folders on every present drive letter.
+    subs = [r"GOG Games\Dungeon Siege II", r"GOG.com\Dungeon Siege II",
+            r"Program Files (x86)\GOG.com\Dungeon Siege II",
+            r"Program Files (x86)\Microsoft Games\Dungeon Siege II",
+            r"Program Files (x86)\Steam\steamapps\common\Dungeon Siege 2"]
+    for drive in (f"{c}:\\" for c in string.ascii_uppercase):
+        if os.path.exists(drive):
+            for sp in subs:
+                yield Path(drive) / sp
+
+
+def _find_prefixes(root, maxdepth=7):
+    """Bounded directory walk for a wine-prefix (…/drive_c/<Games|GOG Games>/…) or Steam-library
+    game dir under `root`. Prunes at drive_c/steamapps (never descends into the huge game trees) and
+    caps depth, so it's safe to point at a big mount root without hanging."""
+    stack = [(Path(root), 0)]
+    while stack:
+        d, depth = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except (OSError, PermissionError):
+            continue
+        for e in entries:
+            try:
+                if not e.is_dir(follow_symlinks=False):
                     continue
+            except OSError:
+                continue
+            if e.name == "drive_c":
+                for sub in ("Games", "GOG Games", "Program Files (x86)/Microsoft Games"):
+                    yield from _dirs_in(Path(e.path) / sub)
+            elif e.name == "steamapps":
+                yield from _dirs_in(Path(e.path) / "common")
+            elif depth < maxdepth:
+                stack.append((Path(e.path), depth + 1))
+
+
+def _linux_dirs():
+    home = Path.home()
+    # explicit Wine prefix
+    wp = os.environ.get("WINEPREFIX")
+    if wp:
+        for name in _DS2_DIRNAMES:
+            for sub in ("drive_c/Games", "drive_c/GOG Games", "drive_c/Program Files (x86)/Microsoft Games"):
+                yield Path(wp) / sub / name
+    # Steam libraries (native + Proton), across drives via libraryfolders.vdf
+    for steam_root in (home / ".local/share/Steam", home / ".steam/steam", home / ".steam/root"):
+        for common in _steam_common_dirs(steam_root):
+            yield from _dirs_in(common)
+    # Heroic (GOG on Linux) recorded install paths
+    yield from _heroic_install_paths()
+    # fallback: bounded scan of common roots (manual Wine prefixes, external drives)
+    for r in (home / ".wine", home / "Games", home / ".local/share/lutris",
+              Path("/run/media"), Path("/mnt"), Path("/media")):
+        if r.exists():
+            yield from _find_prefixes(r)
 
 
 def detect_gamedir(explicit=None):

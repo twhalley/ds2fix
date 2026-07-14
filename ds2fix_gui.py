@@ -12,6 +12,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ds2fix as core   # detect_gamedir, do_patch, do_restore, do_play, _exe_is_patched, pristine_paths, IS_WINDOWS
 from ds2fix_core import __version__
 
+# Render-resolution presets (editable — custom WxH still allowed). 16:9 keeps the native 16:9 menu;
+# 4:3 renders pillarboxed (pair with the menu unchecked to bring back the 3D model previews).
+RENDER_RESOLUTIONS = [
+    "1280x720", "1600x900", "1920x1080", "2560x1440", "3200x1800", "3840x2160",   # 16:9
+    "1024x768", "1280x960", "1400x1050", "1440x1080", "1600x1200", "1920x1440",   # 4:3
+]
+OUTPUT_RESOLUTIONS = ["1920x1080", "2560x1440", "3440x1440", "3840x2160"]
+
 
 class App:
     def __init__(self, root):
@@ -42,15 +50,15 @@ class App:
         self.menu169 = tk.BooleanVar(value=True)
         self.fsr = tk.BooleanVar(value=True)
         ttk.Label(grid, text="Render resolution").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(grid, textvariable=self.res, width=12,
-                     values=["1920x1080", "2560x1440", "3840x2160", "1440x1080", "1280x960"]
+        ttk.Combobox(grid, textvariable=self.res, width=12, values=RENDER_RESOLUTIONS
                      ).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(grid, text="(16:9 keeps native menu · 4:3 = model previews)").grid(
+            row=0, column=2, sticky="w")
         ttk.Label(grid, text="UI scale").grid(row=1, column=0, sticky="w")
         ttk.Entry(grid, textvariable=self.scale, width=8).grid(row=1, column=1, sticky="w", padx=6)
         if not core.IS_WINDOWS:
             ttk.Label(grid, text="Output (monitor)").grid(row=2, column=0, sticky="w")
-            ttk.Combobox(grid, textvariable=self.out, width=12,
-                         values=["2560x1440", "1920x1080", "3840x2160"]
+            ttk.Combobox(grid, textvariable=self.out, width=12, values=OUTPUT_RESOLUTIONS
                          ).grid(row=2, column=1, sticky="w", padx=6)
             ttk.Checkbutton(grid, text="FSR upscaling", variable=self.fsr).grid(row=3, column=1, sticky="w", padx=6)
         ttk.Checkbutton(grid, text="Native 16:9 menu (uncheck to restore 3D model previews)",
@@ -59,9 +67,11 @@ class App:
         # --- actions ---
         act = ttk.Frame(root); act.pack(fill="x", **pad)
         self.btn_patch = ttk.Button(act, text="Patch", command=lambda: self.run(self._patch))
+        self.btn_playonly = ttk.Button(act, text="Play", command=lambda: self.run(self._play_only))
         self.btn_play = ttk.Button(act, text="Patch + Play", command=lambda: self.run(self._play))
         self.btn_restore = ttk.Button(act, text="Restore", command=lambda: self.run(self._restore))
         self.btn_patch.pack(side="left", padx=4)
+        self.btn_playonly.pack(side="left", padx=4)
         self.btn_play.pack(side="left", padx=4)
         self.btn_restore.pack(side="left", padx=4)
 
@@ -96,7 +106,7 @@ class App:
         return core.detect_gamedir(self.gamedir.get() or None)
 
     def _set_buttons(self, enabled):
-        for b in (self.btn_patch, self.btn_play, self.btn_restore):
+        for b in (self.btn_patch, self.btn_playonly, self.btn_play, self.btn_restore):
             b.configure(state="normal" if enabled else "disabled")
 
     def refresh_state(self):
@@ -149,6 +159,11 @@ class App:
         core.do_patch(gd, rw, rh, float(self.scale.get()), self.menu169.get(), log=self._log)
         core.do_play(gd, rw, rh, ow, oh, self.fsr.get(), spawn=True, log=self._log)
         self._log("launched — the game window should appear shortly.")
+
+    def _play_only(self):
+        gd = self._gd(); rw, rh = self._res(self.res); ow, oh = self._res(self.out)
+        core.do_play(gd, rw, rh, ow, oh, self.fsr.get(), spawn=True, log=self._log)
+        self._log("launched (no re-patch) — the game window should appear shortly.")
 
 
 def main():

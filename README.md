@@ -29,7 +29,8 @@ patcher core, with a native launcher).
 ## Quick start
 
 **GUI** — double-click `ds2fix-gui` (Linux) / `ds2fix-gui.exe` (Windows): it auto-detects the install,
-lets you pick resolution / UI scale / 16:9-menu, then **Patch**, **Patch + Play**, or **Restore**.
+lets you pick a resolution (16:9 or 4:3 presets) / UI scale / 16:9-menu, then **Patch**, **Play**,
+**Patch + Play**, or **Restore**.
 
 **CLI** (`ds2fix` / `ds2fix.exe`, or `python ds2fix.py`):
 
@@ -44,8 +45,11 @@ ds2fix restore                  # revert to pristine
 ds2fix info                     # show patch state
 ```
 
-The install is auto-detected (GOG under Wine on Linux; common GOG/Steam paths on Windows) — override with
-`--gamedir <path>` or `DS2_GAMEDIR`. Every `patch`/`play` **idempotently rebuilds from a pristine backup**
+The install is **auto-detected** — **Windows:** the GOG & Steam registry keys, Steam library folders
+(`libraryfolders.vdf`), and a scan of every drive letter's default folders; **Linux:** `$WINEPREFIX`,
+Steam libraries, Heroic (GOG-on-Linux) install records, and a bounded scan of common Wine-prefix roots
+(`~/.wine`, `/run/media`, `/mnt`, …). Override any time with `--gamedir <path>` or `DS2_GAMEDIR`.
+Every `patch`/`play` **idempotently rebuilds from a pristine backup**
 (captured on first run into `*.ds2fix-pristine`), so it's always reproducible and never patches an
 already-patched file. On Linux it launches fullscreen via **gamescope + FSR**; on Windows, native fullscreen.
 
