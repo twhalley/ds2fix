@@ -1,11 +1,12 @@
 # DS2Fix
 
-Modernizes a legally-owned **Dungeon Siege II** install (GOG, running under Wine/Linux) — widescreen
-HUD, native 16:9 menus, fullscreen, campaign difficulties unlocked, and a "ds2fix" version label — via
-reversible binary patches + data-side tank mods and a gamescope launcher. Does **not** distribute the
-game; it patches an existing install in place, always from a pristine base.
+Modernizes a legally-owned **Dungeon Siege II** install (GOG) — widescreen HUD, native 16:9 menus,
+fullscreen, campaign difficulties unlocked, and a "ds2fix" version label — via reversible binary patches
++ data-side tank mods. Ships as a **cross-platform CLI + GUI** (Linux and Windows). Does **not** distribute
+the game; it patches an existing install in place, always from a pristine base.
 
-Status: **v0.1 (working)** — everything below verified in-game.
+Status: **v0.1 (working)** — everything below verified in-game (on Linux/Wine; Windows shares the same
+patcher core, with a native launcher).
 
 ## What works
 
@@ -27,17 +28,44 @@ Status: **v0.1 (working)** — everything below verified in-game.
 
 ## Quick start
 
+**GUI** — double-click `ds2fix-gui` (Linux) / `ds2fix-gui.exe` (Windows): it auto-detects the install,
+lets you pick resolution / UI scale / 16:9-menu, then **Patch**, **Patch + Play**, or **Restore**.
+
+**CLI** (`ds2fix` / `ds2fix.exe`, or `python ds2fix.py`):
+
 ```
-./ds2fix.sh                                   # patch (16:9) + play, 1920x1080 -> 2560x1440 (FSR)
-OUT_W=3840 OUT_H=2160 ./ds2fix.sh             # 4K output
-RES_W=1440 RES_H=1080 ./ds2fix.sh             # 4:3 render (gamescope pillarboxes)
-MENU_169=0 ./ds2fix.sh                        # native 800x600 menu (HUD/canvas fix only)
-DS2_UISCALE=1.75 ./ds2fix.sh                  # bigger menus + ESC menu (default 1.5)
-DS2_PATCH_ONLY=1 ./ds2fix.sh                  # apply patches, don't launch
+ds2fix detect                   # find + report the install
+ds2fix play                     # patch (16:9) + launch — 1920x1080, fullscreen
+ds2fix play --res 1440x1080     # 4:3 render (Linux: gamescope pillarboxes)
+ds2fix play --out 3840x2160     # 4K output (Linux gamescope)
+ds2fix play --no-menu169        # native 800x600 menu (restores the 3D model previews)
+ds2fix patch --scale 1.75       # patch only, bigger menus + ESC menu (default 1.5)
+ds2fix restore                  # revert to pristine
+ds2fix info                     # show patch state
 ```
 
-`ds2fix.sh` **idempotently rebuilds** the patched exe + tank from a pristine base every run (safe to
-re-run; never patches an already-patched file). Override paths with `DS2_GAMEDIR` / `DS2_PRISTINE`.
+The install is auto-detected (GOG under Wine on Linux; common GOG/Steam paths on Windows) — override with
+`--gamedir <path>` or `DS2_GAMEDIR`. Every `patch`/`play` **idempotently rebuilds from a pristine backup**
+(captured on first run into `*.ds2fix-pristine`), so it's always reproducible and never patches an
+already-patched file. On Linux it launches fullscreen via **gamescope + FSR**; on Windows, native fullscreen.
+
+### Get the binaries
+
+Standalone binaries (no Python needed) are built by CI — see [Releases](../../releases), or build locally:
+
+```
+pip install pyinstaller && python build.py     # -> dist/ds2fix(.exe) + dist/ds2fix-gui(.exe)
+```
+
+PyInstaller doesn't cross-compile, so build each OS on its own machine (the CI workflow in
+`.github/workflows/build.yml` builds Linux + Windows on tag pushes). The Python source runs directly too:
+`python ds2fix.py …` / `python ds2fix_gui.py`.
+
+### Legacy Linux shell launcher (`ds2fix.sh`)
+
+The original bash launcher still works on the dev machine (env-driven: `RES_W/RES_H`, `OUT_W/OUT_H`,
+`DS2_UISCALE`, `MENU_169`, `DS2_PATCH_ONLY`) and mirrors the CLI. New work targets the cross-platform
+`ds2fix` CLI/GUI above.
 
 ## The exe patcher (`patcher/patch_dynamic.py <pristine-exe> <out-exe>`)
 

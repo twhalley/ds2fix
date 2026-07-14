@@ -3,3 +3,9 @@
 *.ds2res
 __pycache__/
 *.pyc
+# build artifacts
+dist/
+build/
+*.spec
+.venv/
+buildenv/
