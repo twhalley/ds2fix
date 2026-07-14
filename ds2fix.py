@@ -13,7 +13,7 @@ fullscreen on Windows.
   ds2fix restore                # revert to pristine
   ds2fix info                   # show patch state
 """
-import argparse, os, re, shutil, struct, subprocess, sys
+import argparse, os, re, shutil, struct, subprocess, sys, time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -275,13 +275,89 @@ def play_command(gamedir, res_w, res_h, out_w, out_h, fsr):
     return game_args, env, "windowed (gamescope not found)"
 
 
+def _ds2_running():
+    """True if a DungeonSiege2 game process is alive (matches /proc comm, truncated to 15 chars)."""
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return False
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().startswith("DungeonSiege2"):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _teardown_gamescope(proc, prefix, log):
+    """Kill the whole gamescope process tree, then wineserver — fixes gamescope lingering on Wayland."""
+    import signal
+    if proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+    ws = shutil.which("wineserver")
+    if ws and prefix:
+        try:
+            subprocess.run([ws, "-k"], env=dict(os.environ, WINEPREFIX=prefix), timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    log("gamescope cleaned up.")
+
+
+def _supervise_gamescope(proc, prefix, log):
+    """Wait for DS2 to start then exit (or for gamescope to die, or a startup timeout), then tear the
+    gamescope tree down. Without this, gamescope can hang around after the game quits on Wayland."""
+    appeared, start = False, time.monotonic()
+    try:
+        while proc.poll() is None:
+            if _ds2_running():
+                appeared = True
+            elif appeared:
+                log("DS2 exited — cleaning up gamescope ...")
+                break
+            elif time.monotonic() - start > 120:
+                log("DS2 did not start within 120s — cleaning up gamescope ...")
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        log("interrupted — cleaning up gamescope ...")
+    _teardown_gamescope(proc, prefix, log)
+
+
 def do_play(gamedir, res_w, res_h, out_w, out_h, fsr, spawn=False, log=print):
     cmd, env, note = play_command(gamedir, res_w, res_h, out_w, out_h, fsr)
     log(f"launching ({note}) ...")
-    if spawn:   # GUI: don't replace our process — spawn the game and keep running
-        return subprocess.Popen(cmd, cwd=str(gamedir), env=env)
-    os.chdir(gamedir)
-    os.execvpe(cmd[0], cmd, env)
+    uses_gamescope = (not IS_WINDOWS) and cmd and cmd[0] == "gamescope"
+    if not uses_gamescope:   # native (Windows) / plain windowed — nothing to supervise
+        if spawn:
+            return subprocess.Popen(cmd, cwd=str(gamedir), env=env)
+        os.chdir(gamedir)
+        os.execvpe(cmd[0], cmd, env)
+        return None
+    # gamescope on Linux: run it in its own session so we can reliably tear the whole tree down,
+    # then supervise so gamescope is killed when DS2 exits (Wayland-lingering fix).
+    prefix = env.get("WINEPREFIX")
+    proc = subprocess.Popen(cmd, cwd=str(gamedir), env=env, start_new_session=True)
+    if spawn:   # GUI: supervise in the background
+        import threading
+        threading.Thread(target=_supervise_gamescope, args=(proc, prefix, log), daemon=True).start()
+        return proc
+    _supervise_gamescope(proc, prefix, log)   # CLI: block until the game exits, then clean up
+    return None
 
 
 # ---------- cli ----------

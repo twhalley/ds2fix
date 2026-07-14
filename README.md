@@ -123,8 +123,10 @@ Env: `MENU_169` (0 disables the 16:9 menu), `RES_W`/`RES_H` (forced frontend res
   stored instance field. Fixing it needs tracing the actor-submission render call (apitrace D3D-call diff, or
   a working debugger under non-wow64 wine — this system's wine 11 is wow64-only, so breakpoints don't fire).
   Workaround: run the frontend at native 800×600 (`MENU_169=0`) + gamescope upscale to get the previews back.
-- gamescope on KDE Wayland intermittently fails to present ("Compositor released us but we were not
-  acquired") — usually resolves on alt-tab / relaunch.
+- gamescope on KDE Wayland intermittently fails to *present* ("Compositor released us but we were not
+  acquired") — usually resolves on alt-tab / relaunch. (Separately, gamescope no longer *lingers* after
+  the game exits — the launcher supervises the DS2 process and tears the gamescope tree + wineserver down
+  on exit.)
 
 ## Roadmap (backlog)
 - Windows-compatible packaging (patcher is Python/cross-platform; launcher is Linux/gamescope)
