@@ -6,24 +6,35 @@
 # (*(0xbcb28c))[0xb4-0xac, 0xb8-0xb0] instead of the passed (stale) args, plus CRC-disable, difficulty
 # auto-unlock, non-resizable window, the version label, and (MENU_169) the native-16:9 menu patches.
 import struct
+try:
+    from ._version import __version__            # imported as a package (normal)
+except ImportError:
+    from _version import __version__             # run directly as a script
 
 
-def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, res_h=1080, log=print):
+def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, res_h=1080,
+              version=None, log=print):
     """Patch a pristine DungeonSiege2.exe. `orig`/`dst` are file paths (dst optional -> returns bytes).
     Returns the patched bytes. Raises AssertionError if a patch site doesn't match (wrong/patched exe)."""
     MENU_169, CHOKE, WS169 = menu169, choke, ws169
+    version = version or __version__
     d = bytearray(open(orig, 'rb').read())
 
-    # ---- PATCH 0: version label "$MSG$Version - %S" -> "$MSG$ds2fix 0.1" (idempotent).
+    # ---- PATCH 0: menu version label "$MSG$Version - %S" -> "$MSG$ds2fix <version>" (idempotent).
+    # Fixed slot: len("$MSG$ds2fix <version>") must be <= len("$MSG$Version - %S"); if the version is
+    # too long for the menu, drop it to just "ds2fix" (the gameplay overlay still shows it in full).
     _vold = b'$MSG$Version - %S\x00'
-    _vnew = b'$MSG$ds2fix 0.1\x00'
+    _label = f'ds2fix {version}'
+    _vnew = b'$MSG$' + _label.encode('latin1') + b'\x00'
+    if len(_vnew) > len(_vold):
+        _label, _vnew = 'ds2fix', b'$MSG$ds2fix\x00'
     _vi = d.find(_vold)
     if _vi > 0:
         d[_vi:_vi+len(_vnew)] = _vnew
         for _k in range(len(_vnew), len(_vold)):
             d[_vi+_k] = 0
-        log('OK: version label -> "ds2fix 0.1"')
-    elif d.find(_vnew) < 0:
+        log(f'OK: version label -> "{_label}"')
+    elif d.find(b'$MSG$ds2fix') < 0:
         log('WARN: version string not found (already patched or exe differs)')
 
     # ---- PATCH CRC: disable the tank content-integrity check (enables all .gas data mods).

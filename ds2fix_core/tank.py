@@ -4,6 +4,10 @@
 # the 16:9 canvas and injects the top-right "ds2fix 0.1" overlay into the always-on data_bar HUD.
 # Requires the exe CRC content-check disabled (see exe_patch.py).
 import struct, zlib, re, shutil
+try:
+    from ._version import __version__            # imported as a package (normal)
+except ImportError:
+    from _version import __version__             # run directly as a script
 
 CW, CH = 1912, 1046
 OVERRIDES = { (1, 576, 284, 599): (1590, 12, 1900, 40) }   # text_version "ds2fix 0.1" -> top-right corner
@@ -23,19 +27,25 @@ INTENDED = {}
 # In-game "ds2fix 0.1" overlay: injected into the always-on data_bar HUD (needs `visible = true`).
 OVERLAY_TARGET = 'ui/interfaces/backend/data_bar/data_bar.gas'
 OVERLAY_ANCHOR = b'\t[t:button,n:button_collect_loot_bg]'
-OVERLAY_NODE = (b'\t[t:text,n:text_ds2fix]\r\n'
-                b'\t{\r\n'
-                b'\t  x font_color = -1;\r\n'
-                b'\t  i draw_order = 200;\r\n'
-                b'\t\tfont_type = b_gui_fnt_16p_ringbearer-gold;\r\n'
-                b'\t  b is_right_anchor = true;\r\n'
-                b'\t\tjustify = right;\r\n'
-                b'\t\trect = 655,4,797,28;\r\n'
-                b'\t  i right_anchor = 145;\r\n'
-                b'\t\ttext = "ds2fix 0.1";\r\n'
-                b'\t  b topmost = true;\r\n'
-                b'\t  b visible = true;\r\n'
-                b'\t}\r\n')
+
+
+def _overlay_node(version):
+    """Build the top-right overlay text node for the given version (e.g. 'ds2fix 0.1.2')."""
+    return (b'\t[t:text,n:text_ds2fix]\r\n'
+            b'\t{\r\n'
+            b'\t  x font_color = -1;\r\n'
+            b'\t  i draw_order = 200;\r\n'
+            b'\t\tfont_type = b_gui_fnt_16p_ringbearer-gold;\r\n'
+            b'\t  b is_right_anchor = true;\r\n'
+            b'\t\tjustify = right;\r\n'
+            b'\t\trect = 640,4,797,28;\r\n'
+            b'\t  i right_anchor = 160;\r\n'
+            b'\t\ttext = "ds2fix ' + version.encode('latin1') + b'";\r\n'
+            b'\t  b topmost = true;\r\n'
+            b'\t  b visible = true;\r\n'
+            b'\t}\r\n')
+
+
 if OVERLAY_TARGET not in TARGETS:
     TARGETS.append(OVERLAY_TARGET)
 
@@ -59,12 +69,12 @@ def scale_center(u, scale, iw=800, ih=600):
     return u
 
 
-def insert_overlay(u):
+def insert_overlay(u, version):
     if b'text_ds2fix' in u:   # idempotent
         return u
     i = u.find(OVERLAY_ANCHOR)
     assert i != -1, "data_bar overlay anchor element not found"
-    u = u[:i] + OVERLAY_NODE + u[i:]
+    u = u[:i] + _overlay_node(version) + u[i:]
     u = re.sub(rb'[ \t]+(\r?\n)', rb'\1', u)
     u = re.sub(rb'(?m)^[ \t]*\r?\n', b'', u)
     return u
@@ -95,9 +105,10 @@ def parse(d):
     return files, sorted(offs)
 
 
-def edit_tank(tank, scale=1.5, backup=True, log=print):
+def edit_tank(tank, scale=1.5, backup=True, version=None, log=print):
     """Edit a DSg2Tank (.ds2res) in place: scale/center the menu interfaces + inject the overlay.
     Writes a `.pre-edit.bak` next to it (if backup). Requires the exe CRC check disabled."""
+    version = version or __version__
     d = bytearray(open(tank,'rb').read())
     files, offs = parse(d)
     if backup:
@@ -113,7 +124,7 @@ def edit_tank(tank, scale=1.5, backup=True, log=print):
             u += part + (d[base+rel+cs:base+rel+cs+RAW] if i < nch-1 else b'')
         assert len(u) == size, f"{path}: decompressed {len(u)} != size {size}"
         iw, ih = INTENDED.get(path, (800, 600))
-        u2 = insert_overlay(u) if path == OVERLAY_TARGET else scale_center(u, scale, iw, ih)
+        u2 = insert_overlay(u, version) if path == OVERLAY_TARGET else scale_center(u, scale, iw, ih)
         if 'frontend_help' in path:   # tight slot: drop center_height (minor vertical-align) to fit
             u2 = re.sub(rb'[ \t]*center_height = true;\r?\n', b'', u2)
         blocks = [u2[i:i+BLK] for i in range(0, len(u2), BLK)] or [b'']
