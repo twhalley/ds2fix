@@ -7,6 +7,7 @@
 #   RES_W=1920 RES_H=1080 OUT_W=3840 OUT_H=2160 ./ds2fix.sh   # 4K output
 #   RES_W=1440 RES_H=1080 ./ds2fix.sh                          # 4:3 render (pillarboxed by gamescope)
 #   MENU_169=0 ./ds2fix.sh      # keep native 800x600 menu (HUD/canvas fix only)
+#   DS2_UISCALE=1.75 ./ds2fix.sh   # scale up the (16:9) menus + in-game ESC menu (default 1.5)
 #   DS2_PATCH_ONLY=1 ./ds2fix.sh   # apply patches, don't launch
 #   DS2_NO_PATCH=1 ./ds2fix.sh     # launch only, skip re-patching
 set -euo pipefail
@@ -38,7 +39,7 @@ if [ "${DS2_NO_PATCH:-0}" != 1 ]; then
   echo "ds2fix: patching exe (MENU_169=$MENU_169, ${RES_W}x${RES_H}) ..."
   RES_W="$RES_W" RES_H="$RES_H" python3 "$SCRIPTS/patch_dynamic.py" "$PEXE" "$GAMEDIR/DungeonSiege2.exe" \
     | sed 's/^/  /'
-  echo "ds2fix: patching tank (scale ${UISCALE}) ..."
+  echo "ds2fix: patching tank (UI scale ${UISCALE}; set DS2_UISCALE to change) ..."
   cp -f "$PTANK" "$GAMEDIR/Resources/Logic.ds2res"
   python3 "$SCRIPTS/tank_edit.py" "$GAMEDIR/Resources/Logic.ds2res" "$UISCALE" | grep -E '^OK|PATCHED' | sed 's/^/  /'
 fi

@@ -15,10 +15,13 @@ Status: **v0.1 (working)** — everything below verified in-game.
 | Off-screen menus fixed | dynamic UI-canvas patch (exe) |
 | Native 16:9 menu (not stretched) | `MENU_169` patches force the frontend to render 16:9 (exe) |
 | Frontend menus scaled + centered for 16:9 | tank `.gas` rect transform (`tank_edit.py`) |
+| In-game (ESC/pause) menu scaled + centered for 16:9 | tank `.gas` rect transform (`tank_edit.py`) |
+| In-game "ds2fix 0.1" overlay, top-right during gameplay | tank `.gas` text node injected into `data_bar` HUD |
 | All campaign difficulties (Merc/Vet/Elite) unlocked from the start | completion-check patch (exe) |
 | Tank data mods no longer crash the game | content-integrity CRC check disabled (exe) |
 | Non-resizable window (no resize black-screen) | window-style patch (exe) |
 | Configurable render + output resolution | `RES_W/RES_H`, `OUT_W/OUT_H` env |
+| Configurable UI scale (menus + ESC menu) | `DS2_UISCALE` env (default 1.5) |
 | Fullscreen, upscaled to monitor | `ds2fix.sh` / `play-ds2.sh` (gamescope + FSR) |
 | Version label reads "ds2fix 0.1" | version-string patch (exe) |
 
@@ -29,6 +32,7 @@ Status: **v0.1 (working)** — everything below verified in-game.
 OUT_W=3840 OUT_H=2160 ./ds2fix.sh             # 4K output
 RES_W=1440 RES_H=1080 ./ds2fix.sh             # 4:3 render (gamescope pillarboxes)
 MENU_169=0 ./ds2fix.sh                        # native 800x600 menu (HUD/canvas fix only)
+DS2_UISCALE=1.75 ./ds2fix.sh                  # bigger menus + ESC menu (default 1.5)
 DS2_PATCH_ONLY=1 ./ds2fix.sh                  # apply patches, don't launch
 ```
 
@@ -59,11 +63,14 @@ Env: `MENU_169` (0 disables the 16:9 menu), `RES_W`/`RES_H` (forced frontend res
 ## Tank tooling (DSg2Tank / .ds2res)
 
 - **`patcher/tank_edit.py <tank> [scale]`** — general in-place `.gas` editor. Scales+centers the frontend
-  interfaces into the 16:9 canvas, recompresses within each file's slot, fixes size/CRC/chunk-table, and
-  bumps the `.gas` FILETIME past its compiled `dir.lqd22` cache so the engine recompiles from source.
-  Handles **multi-chunk** files correctly (each 16384-byte block = `zlib(first 16368B)` + 16 raw content
-  bytes; table = `[total, blocksize] + per-chunk[uncomp, comp, rawtail, reloff]`, 4-byte aligned after
-  the name). Requires the CRC check disabled (above).
+  **and in-game (ESC) menus** into the 16:9 canvas (each about its own content centre, so the 640×480 ESC
+  menu lands centred like the 800×600 frontend), **and injects the top-right "ds2fix 0.1" overlay text node
+  into the always-on `data_bar` HUD**. Recompresses within each file's slot, fixes size/CRC/chunk-table, and
+  bumps the `.gas` FILETIME past its compiled `dir.lqd22` cache so the engine recompiles from source. To fit
+  tight slots it strips trailing whitespace / blank lines (and dedents skrit-free files). Handles
+  **multi-chunk** files correctly (each 16384-byte block = `zlib(first 16368B)` + 16 raw content bytes;
+  table = `[total, blocksize] + per-chunk[uncomp, comp, rawtail, reloff]`, 4-byte aligned after the name).
+  Requires the CRC check disabled (above).
 - `patcher/tank_parse.py <tank>` — parse the DirSet/FileSet and reconstruct logical file paths.
 - `patcher/carve.py <tank> <outdir>` — zlib-carve extraction of UI `.gas` text.
 
@@ -74,17 +81,23 @@ Env: `MENU_169` (0 disables the 16:9 menu), `RES_W`/`RES_H` (forced frontend res
 `analyzeHeadless <proj> ds2 -process DungeonSiege2.exe -noanalysis -scriptPath ghidra -postScript X.java`.
 
 ## Known issues
-- **Frontend 3D hero preview** (char select/create model) renders only at 800×600 — the forced-16:9
-  frontend leaves it blank. Deeply investigated (it's an actor-cull in the `object_view` world render at
-  >800×600); parked because gdb breakpoints don't work under wow64 and static RE couldn't pin the cull.
-  Character creation is fully functional without the live model. Fallback: native-800 + gamescope upscale.
+- **`object_view` 3D model previews render only at an 800×600 backbuffer** — the char-select / create-hero
+  model, the inventory/character paperdoll, and the menu party preview are blank at higher resolutions.
+  World models (party, enemies) render fine; this is specific to the UI preview panels, and character
+  creation is fully functional by name/stats. **Diagnosis (extensive):** the `object_view` UI *instance* is
+  identical at 800 vs 1920 (verified by live-memory A/B diff — same rect, same `+0x78/+0x7c` dims) and the 3D
+  *scene* renders (the background fills the frame); only the character **actor is never submitted to the
+  scene draw** at high res. It is *not* the 2D UI-element cull (`FUN_0075dbc0` — NOP-tested, no effect) nor a
+  stored instance field. Fixing it needs tracing the actor-submission render call (apitrace D3D-call diff, or
+  a working debugger under non-wow64 wine — this system's wine 11 is wow64-only, so breakpoints don't fire).
+  Workaround: run the frontend at native 800×600 (`MENU_169=0`) + gamescope upscale to get the previews back.
 - gamescope on KDE Wayland intermittently fails to present ("Compositor released us but we were not
   acquired") — usually resolves on alt-tab / relaunch.
 
 ## Roadmap (backlog)
-- Native in-game "ds2fix 0.1" overlay during gameplay (top-right)
 - Windows-compatible packaging (patcher is Python/cross-platform; launcher is Linux/gamescope)
-- Fix the frontend hero-preview render at high res
+- `object_view` model previews at high res (needs render-call tracing — see Known issues)
+- Co-op multiplayer revival (direct-IP/LAN over VPN; GameSpy master-server replacement) — GameSpy is dead
 
 ---
 🤖 Tooling built with [Claude Code](https://claude.com/claude-code)
