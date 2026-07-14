@@ -75,6 +75,15 @@ class App:
         self.btn_play.pack(side="left", padx=4)
         self.btn_restore.pack(side="left", padx=4)
 
+        # --- saves ---
+        sav = ttk.LabelFrame(root, text="Saves  (auto-backed-up before every patch)")
+        sav.pack(fill="x", **pad)
+        srow = ttk.Frame(sav); srow.pack(fill="x", padx=6, pady=6)
+        self.btn_bkup = ttk.Button(srow, text="Back up now", command=lambda: self.run(self._backup_saves))
+        self.btn_rsav = ttk.Button(srow, text="Restore latest", command=lambda: self.run(self._restore_saves))
+        self.btn_bkup.pack(side="left", padx=4)
+        self.btn_rsav.pack(side="left", padx=4)
+
         # --- log ---
         self.log = scrolledtext.ScrolledText(root, height=12, state="disabled", wrap="word")
         self.log.pack(fill="both", expand=True, **pad)
@@ -106,7 +115,8 @@ class App:
         return core.detect_gamedir(self.gamedir.get() or None)
 
     def _set_buttons(self, enabled):
-        for b in (self.btn_patch, self.btn_playonly, self.btn_play, self.btn_restore):
+        for b in (self.btn_patch, self.btn_playonly, self.btn_play, self.btn_restore,
+                  self.btn_bkup, self.btn_rsav):
             b.configure(state="normal" if enabled else "disabled")
 
     def refresh_state(self):
@@ -164,6 +174,13 @@ class App:
         gd = self._gd(); rw, rh = self._res(self.res); ow, oh = self._res(self.out)
         core.do_play(gd, rw, rh, ow, oh, self.fsr.get(), spawn=True, log=self._log)
         self._log("launched (no re-patch) — the game window should appear shortly.")
+
+    def _backup_saves(self):
+        dest = core.backup_saves(self._gd(), log=self._log)
+        self._log(f"saves backed up -> {dest}" if dest else "no saves found to back up.")
+
+    def _restore_saves(self):
+        core.restore_saves(self._gd(), log=self._log)
 
 
 def main():

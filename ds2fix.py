@@ -159,14 +159,62 @@ def _linux_dirs():
             yield from _find_prefixes(r)
 
 
-def detect_gamedir(explicit=None):
+# ---------- config / pinned install ----------
+def _config_dir():
+    if IS_WINDOWS:
+        base = os.environ.get("APPDATA") or str(Path.home())
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "ds2fix"
+
+
+def _load_config():
+    import json
+    try:
+        return json.loads((_config_dir() / "config.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_config(cfg):
+    import json
+    _config_dir().mkdir(parents=True, exist_ok=True)
+    (_config_dir() / "config.json").write_text(json.dumps(cfg, indent=2))
+
+
+def _pin_gamedir(path):
+    """Remember this install so future runs use the SAME game + save folder (no re-detection)."""
+    cfg = _load_config()
+    cfg["gamedir"] = str(path)
+    prefix = None if IS_WINDOWS else _wineprefix_for(Path(path))
+    if prefix:
+        cfg["wineprefix"] = prefix
+    _save_config(cfg)
+
+
+def unpin():
+    cfg = _load_config()
+    cfg.pop("gamedir", None); cfg.pop("wineprefix", None)
+    _save_config(cfg)
+
+
+def detect_gamedir(explicit=None, pin=True):
+    """Resolve the DS2 install. Order: explicit (--gamedir/DS2_GAMEDIR) -> pinned config -> auto-detect.
+    The resolved install is pinned so updates always launch the same game + saves (unless pin=False)."""
     if explicit:
         p = Path(explicit)
         if (p / EXE_NAME).is_file():
+            if pin:
+                _pin_gamedir(p)
             return p
         raise SystemExit(f"ds2fix: {EXE_NAME} not found in {p}")
+    pinned = _load_config().get("gamedir")
+    if pinned and (Path(pinned) / EXE_NAME).is_file():
+        return Path(pinned)
     for c in _candidate_gamedirs():
         if (c / EXE_NAME).is_file():
+            if pin:
+                _pin_gamedir(c)
             return c
     raise SystemExit("ds2fix: could not auto-detect the DS2 install. Pass --gamedir <path> "
                      "(the folder containing DungeonSiege2.exe) or set DS2_GAMEDIR.")
@@ -207,8 +255,94 @@ def ensure_backup(gamedir, log=print):
     return pexe, ptank
 
 
+# ---------- save-game backup ----------
+def _windows_documents():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders") as k:
+            return Path(winreg.QueryValueEx(k, "Personal")[0])
+    except OSError:
+        return Path.home() / "Documents"
+
+
+def _ds2_docs_dir(gamedir):
+    """Locate the DS2 user folder (…/My Games/Dungeon Siege 2) that holds Save/ — this lives OUTSIDE the
+    game dir, in the user's Documents (via a Wine symlink on Linux), and is what 'disappears' when you
+    launch under a different prefix. Returns the existing folder or None."""
+    rel = ("My Games", "Dungeon Siege 2")
+    candidates = []
+    if IS_WINDOWS:
+        candidates.append(_windows_documents().joinpath(*rel))
+    else:
+        prefix = _wineprefix_for(gamedir)
+        if prefix:
+            users = Path(prefix) / "drive_c" / "users"
+            if users.is_dir():
+                for u in users.iterdir():
+                    candidates.append(u / "Documents" / Path(*rel))
+        candidates.append(Path.home() / "Documents" / Path(*rel))
+    for c in candidates:
+        try:
+            if c.is_dir():
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _save_backups_root():
+    return _config_dir() / "save-backups"
+
+
+def list_save_backups():
+    root = _save_backups_root()
+    if not root.is_dir():
+        return []
+    return sorted(d for d in root.iterdir() if (d / "Save").is_dir())
+
+
+def backup_saves(gamedir, log=print, keep=20):
+    """Copy the DS2 Save/ folder to a timestamped backup under the ds2fix config dir. Returns the backup
+    path (or None if there's nothing to back up). Keeps the newest `keep` backups."""
+    docs = _ds2_docs_dir(gamedir)
+    save = docs / "Save" if docs else None
+    if not save or not save.is_dir() or not any(save.iterdir()):
+        return None
+    dest = _save_backups_root() / time.strftime("%Y%m%d-%H%M%S")
+    if dest.exists():
+        return dest   # already backed up this second
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(save, dest / "Save")
+    for old in list_save_backups()[:-keep]:
+        shutil.rmtree(old, ignore_errors=True)
+    log(f"saves backed up -> {dest}")
+    return dest
+
+
+def restore_saves(gamedir, which=None, log=print):
+    """Restore a save backup (latest, or a named one) into the DS2 Save/ folder. The current saves are
+    themselves backed up first, so a restore is never destructive."""
+    docs = _ds2_docs_dir(gamedir)
+    if not docs:
+        raise SystemExit("ds2fix: could not locate the DS2 save folder for this install.")
+    backups = list_save_backups()
+    if not backups:
+        raise SystemExit("ds2fix: no save backups found yet (they're made automatically before each patch).")
+    src = backups[-1] if which is None else next((b for b in backups if b.name == which), None)
+    if src is None:
+        raise SystemExit(f"ds2fix: no save backup named '{which}'. See `ds2fix info`.")
+    backup_saves(gamedir, log)   # snapshot current before overwriting
+    save = docs / "Save"
+    if save.exists():
+        shutil.rmtree(save)
+    shutil.copytree(src / "Save", save)
+    log(f"restored saves from backup {src.name} -> {save}")
+
+
 # ---------- actions ----------
 def do_patch(gamedir, res_w, res_h, scale, menu169, log=print):
+    backup_saves(gamedir, log)   # safety net: never lose a save to a patch/update
     pexe, ptank = ensure_backup(gamedir, log)
     exe, tank = gamedir / EXE_NAME, gamedir / TANK_REL
     log(f"patching exe (MENU_169={int(menu169)}, {res_w}x{res_h}) ...")
@@ -233,9 +367,15 @@ def do_restore(gamedir, log=print):
 def do_info(gamedir, log=print):
     exe = gamedir / EXE_NAME
     pexe, ptank = pristine_paths(gamedir)
+    pinned = _load_config().get("gamedir")
+    docs = _ds2_docs_dir(gamedir)
+    backups = list_save_backups()
     log(f"game dir : {gamedir}")
+    log(f"pinned   : {'yes (this install is remembered across updates)' if pinned == str(gamedir) else 'no'}")
     log(f"exe      : {'PATCHED (ds2fix)' if _exe_is_patched(exe) else 'pristine/unpatched'}")
     log(f"backup   : exe={'yes' if pexe.exists() else 'no'}  tank={'yes' if ptank.exists() else 'no'}")
+    log(f"saves    : {docs / 'Save' if docs else '(save folder not found)'}")
+    log(f"save bkps: {len(backups)}" + (f" (latest {backups[-1].name})" if backups else ""))
     log(f"platform : {'windows (native launch)' if IS_WINDOWS else 'linux (wine/gamescope launch)'}")
 
 
@@ -383,10 +523,15 @@ def build_parser():
         sp.add_argument("--no-menu169", action="store_true",
                         help="keep the native 800x600 menu (restores the 3D model previews)")
 
-    sub.add_parser("detect", help="find + report the install")
-    sub.add_parser("info", help="show patch state")
-    sub.add_parser("restore", help="revert to pristine")
-    add_patch_opts(sub.add_parser("patch", help="patch (from pristine)"))
+    sub.add_parser("detect", help="find + report the install (and pin it)")
+    sub.add_parser("info", help="show patch/save/pin state")
+    sub.add_parser("restore", help="revert exe+tank to pristine")
+    sub.add_parser("pin", help="remember this install so updates use the same game + saves")
+    sub.add_parser("unpin", help="forget the pinned install (re-detect next time)")
+    sub.add_parser("backup-saves", help="back up your save games now")
+    sp_rs = sub.add_parser("restore-saves", help="restore saves from a backup (latest by default)")
+    sp_rs.add_argument("--which", help="backup name to restore (see `ds2fix info`); default = latest")
+    add_patch_opts(sub.add_parser("patch", help="patch (from pristine; auto-backs-up saves first)"))
     sp_play = sub.add_parser("play", help="patch + launch")
     add_patch_opts(sp_play)
     sp_play.add_argument("--out", type=_res, default=(2560, 1440), metavar="WxH",
@@ -401,9 +546,18 @@ def main(argv=None):
     if args.cmd == "detect":
         print(detect_gamedir(args.gamedir))
         return
+    if args.cmd == "unpin":
+        unpin(); print("ds2fix: install unpinned (will re-detect next run)."); return
     gamedir = detect_gamedir(args.gamedir)
     if args.cmd == "info":
         do_info(gamedir)
+    elif args.cmd == "pin":
+        _pin_gamedir(gamedir); print(f"ds2fix: pinned install -> {gamedir}")
+    elif args.cmd == "backup-saves":
+        dest = backup_saves(gamedir)
+        print(f"ds2fix: saves backed up -> {dest}" if dest else "ds2fix: no saves found to back up.")
+    elif args.cmd == "restore-saves":
+        restore_saves(gamedir, args.which)
     elif args.cmd == "restore":
         do_restore(gamedir)
     elif args.cmd == "patch":

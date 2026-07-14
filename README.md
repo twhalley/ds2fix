@@ -41,9 +41,24 @@ ds2fix play --res 1440x1080     # 4:3 render (Linux: gamescope pillarboxes)
 ds2fix play --out 3840x2160     # 4K output (Linux gamescope)
 ds2fix play --no-menu169        # native 800x600 menu (restores the 3D model previews)
 ds2fix patch --scale 1.75       # patch only, bigger menus + ESC menu (default 1.5)
-ds2fix restore                  # revert to pristine
-ds2fix info                     # show patch state
+ds2fix restore                  # revert exe+tank to pristine
+ds2fix backup-saves             # back up your save games now
+ds2fix restore-saves            # restore saves from the latest backup
+ds2fix pin / unpin              # remember (or forget) this install across updates
+ds2fix info                     # show patch / save / pin state
 ```
+
+### Your saves are safe (and pinned)
+
+DS2 stores saves **outside** the game folder — in `Documents/My Games/Dungeon Siege 2/Save/` (on Linux,
+that's reached through a Wine symlink, and it belongs to a specific Wine **prefix**). ds2fix never touches
+saves when patching. Two safeguards keep them that way:
+- **Auto-backup:** every `patch`/`play` snapshots your `Save/` folder first (timestamped, kept under the
+  ds2fix config dir — `~/.local/share/ds2fix/save-backups` / `%APPDATA%\ds2fix\save-backups`). Recover with
+  `ds2fix restore-saves` (which also snapshots the current saves first, so it's never destructive).
+- **Pinned install:** the first detected/`--gamedir` install is remembered, so **every update launches the
+  same game + the same save folder** — you won't accidentally boot a different install (e.g. a Steam copy)
+  with an empty save list. `ds2fix info` shows what's pinned; `ds2fix unpin` re-detects.
 
 The install is **auto-detected** — **Windows:** the GOG & Steam registry keys, Steam library folders
 (`libraryfolders.vdf`), and a scan of every drive letter's default folders; **Linux:** `$WINEPREFIX`,

@@ -5,4 +5,4 @@
 # NOTE: the in-game MENU label lives in a fixed 17-char exe slot ("$MSG$Version - %S"), so
 # "ds2fix <version>" must be <= 17 chars, i.e. the version must be <= 5 chars (e.g. "0.1.2", "1.0").
 # Longer versions still show in full on the gameplay overlay; the menu label just drops to "ds2fix".
-__version__ = "0.1.3"
+__version__ = "0.1.4"
