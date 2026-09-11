@@ -44,8 +44,8 @@ class App:
         opt = ttk.LabelFrame(root, text="Options")
         opt.pack(fill="x", **pad)
         grid = ttk.Frame(opt); grid.pack(fill="x", padx=6, pady=6)
-        self.res = tk.StringVar(value="1920x1080")
-        self.scale = tk.StringVar(value="1.5")
+        self.res = tk.StringVar(value="%dx%d" % core.default_res())
+        self.scale = tk.StringVar(value="auto")
         self.out = tk.StringVar(value="2560x1440")
         self.menu169 = tk.BooleanVar(value=True)
         self.fsr = tk.BooleanVar(value=True)
@@ -53,7 +53,8 @@ class App:
         ttk.Label(grid, text="Render resolution").grid(row=0, column=0, sticky="w")
         ttk.Combobox(grid, textvariable=self.res, width=12, values=RENDER_RESOLUTIONS
                      ).grid(row=0, column=1, sticky="w", padx=6)
-        ttk.Label(grid, text="(16:9 keeps native menu · 4:3 = model previews)").grid(
+        ttk.Label(grid, text=("(= monitor → borderless fullscreen; alt-tab friendly)" if core.IS_WINDOWS
+                              else "(16:9 keeps native menu · 4:3 = model previews)")).grid(
             row=0, column=2, sticky="w")
         ttk.Label(grid, text="UI scale").grid(row=1, column=0, sticky="w")
         ttk.Entry(grid, textvariable=self.scale, width=8).grid(row=1, column=1, sticky="w", padx=6)
@@ -130,6 +131,11 @@ class App:
         w, h = var.get().lower().split("x")
         return int(w), int(h)
 
+    def _scale(self):
+        """UI scale from the entry: a number, or 'auto' (None -> core picks height/720)."""
+        s = self.scale.get().strip().lower()
+        return None if s in ("", "auto") else float(s)
+
     def _gd(self):
         return core.detect_gamedir(self.gamedir.get() or None)
 
@@ -178,7 +184,7 @@ class App:
 
     def _patch(self):
         gd = self._gd(); rw, rh = self._res(self.res)
-        core.do_patch(gd, rw, rh, float(self.scale.get()), self.menu169.get(), log=self._log)
+        core.do_patch(gd, rw, rh, self._scale(), self.menu169.get(), log=self._log)
 
     def _restore(self):
         core.do_restore(self._gd(), log=self._log)
@@ -191,7 +197,7 @@ class App:
 
     def _play(self):
         gd = self._gd(); rw, rh = self._res(self.res); ow, oh = self._res(self.out)
-        core.do_patch(gd, rw, rh, float(self.scale.get()), self.menu169.get(), log=self._log)
+        core.do_patch(gd, rw, rh, self._scale(), self.menu169.get(), log=self._log)
         core.do_play(gd, rw, rh, ow, oh, self.fsr.get(), self._maxfps(), spawn=True, log=self._log)
         self._log("launched — the game window should appear shortly.")
 

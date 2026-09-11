@@ -13,9 +13,11 @@ except ImportError:
 
 
 def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, res_h=1080,
-              version=None, log=print):
+              version=None, log=print, borderless=False):
     """Patch a pristine DungeonSiege2.exe. `orig`/`dst` are file paths (dst optional -> returns bytes).
-    Returns the patched bytes. Raises AssertionError if a patch site doesn't match (wrong/patched exe)."""
+    Returns the patched bytes. Raises AssertionError if a patch site doesn't match (wrong/patched exe).
+    `borderless`: give the game window a WS_POPUP (no caption/frame) style instead of the non-resizable
+    captioned one — the Windows launcher's borderless-fullscreen mode (see PATCH WIN)."""
     MENU_169, CHOKE, WS169 = menu169, choke, ws169
     version = version or __version__
     with open(orig, 'rb') as _f:
@@ -81,13 +83,32 @@ def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, 
     else:
         log(f'WARN: unlock site unexpected ({bytes(d[_unlock_fo:_unlock_fo+2]).hex()}); skipped')
 
-    # ---- PATCH WIN: non-resizable window (drop WS_THICKFRAME: 0xce imm @0x5ebc47 -> 0xca).
-    _win_fo = 0x5ebc47 - 0x400000
-    if d[_win_fo] == 0xce:
-        d[_win_fo] = 0xca
-        log('OK: window made non-resizable (WS_THICKFRAME removed) -> no resize black-screen')
-    elif d[_win_fo] == 0xca:
-        log('OK: window already non-resizable')
+    # ---- PATCH WIN: window style. The top-level window style is the immediate in
+    # `mov [ebp-4], 0x10ce0000` @0x5ebc42 (imm @0x5ebc45; WS_VISIBLE|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|
+    # WS_MINIMIZEBOX) inside the style-builder the windowed CreateWindowExA (@0x5f226d) uses. Two modes:
+    #  * default: non-resizable — drop WS_THICKFRAME (0xce -> 0xca @0x5ebc47). DS2 never rebuilds the
+    #    swapchain on WM_SIZE, so dragging the border used to black it out. (Linux/Wine + gamescope path.)
+    #  * borderless: WS_POPUP|WS_VISIBLE (0x90000000). No caption/frame, so AdjustWindowRect adds nothing
+    #    and the client area == the render res exactly; launched `fullscreen=false` at the monitor's res
+    #    this IS borderless fullscreen — clean alt-tab, no exclusive mode switch (which on native Windows
+    #    also ran the whole frontend at 800x600, ignoring the MENU_169 patches). Windows launcher default.
+    _win_imm = 0x5ebc45 - 0x400000
+    _cur = bytes(d[_win_imm:_win_imm+4])
+    if borderless:
+        if _cur in (b'\x00\x00\xce\x10', b'\x00\x00\xca\x10'):
+            d[_win_imm:_win_imm+4] = (0x90000000).to_bytes(4, 'little')
+            log('OK: window made BORDERLESS (WS_POPUP|WS_VISIBLE @0x5ebc45) -> borderless fullscreen when res == monitor')
+        elif _cur == b'\x00\x00\x00\x90':
+            log('OK: window already borderless')
+        else:
+            log(f'WARN: window-style site unexpected ({_cur.hex()}); skipped')
+    else:
+        _win_fo = 0x5ebc47 - 0x400000
+        if d[_win_fo] == 0xce:
+            d[_win_fo] = 0xca
+            log('OK: window made non-resizable (WS_THICKFRAME removed) -> no resize black-screen')
+        elif d[_win_fo] == 0xca:
+            log('OK: window already non-resizable')
 
     # ---- PATCH MPBTN: enable the Multiplayer button. UIFrontend::TransitionToMain (@0x44c2d3)
     # UNCONDITIONALLY calls UIButton::DisableButton on "button_multiplayer" every time the main menu
@@ -202,19 +223,19 @@ def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, 
             d[new_raw+0x30 : new_raw+0x30+len(stub2)] = stub2
             assert bytes(d[txt_fo(0x5ebed1):txt_fo(0x5ebed1)+6]) == bytes([0x89,0x4d,0xf8,0x89,0x45,0xfc]), "sizer store mismatch"
             d[txt_fo(0x5ebed1):txt_fo(0x5ebed1)+6] = bytes([0xe9]) + struct.pack('<i', S2 - (0x5ebed1+5)) + bytes([0x90])
-            log(f"OK: [MENU_169] sizer choke-point forced 1920x1080 (FUN_005ebeba -> stub @{S2:#x})")
+            log(f"OK: [MENU_169] sizer choke-point forced {_rw}x{_rh} (FUN_005ebeba -> stub @{S2:#x})")
 
         for jne_va in (0x5f12f0, 0x5f1344):
             assert bytes(d[txt_fo(jne_va):txt_fo(jne_va)+2]) == bytes([0x75,0x0c]), f"jne mismatch @{jne_va:#x}"
             d[txt_fo(jne_va):txt_fo(jne_va)+2] = bytes([0x90,0x90])
-        log("OK: [MENU_169] NOP'd config-read jne @0x5f12f0/0x5f1344 -> creation forced to fallback 1920x1080")
+        log(f"OK: [MENU_169] NOP'd config-read jne @0x5f12f0/0x5f1344 -> creation forced to fallback {_rw}x{_rh}")
 
         assert bytes(d[txt_fo(0x5f2220):txt_fo(0x5f2220)+6]) == bytes([0x8b,0x40,0x0c,0x2b,0x41,0x04]), "cwx-h mismatch"
         assert bytes(d[txt_fo(0x5f2233):txt_fo(0x5f2233)+5]) == bytes([0x8b,0x40,0x08,0x2b,0x01]), "cwx-w mismatch"
         d[txt_fo(0x5f2220):txt_fo(0x5f2220)+6] = bytes([0xb8]) + NEW_H + bytes([0x90])   # mov eax,1080 ; nop
         d[txt_fo(0x5f2233):txt_fo(0x5f2233)+5] = bytes([0xb8]) + NEW_W                   # mov eax,1920
-        log("OK: [MENU_169] CreateWindowExA args forced to 1920x1080 (@0x5f2220/0x5f2233)")
-        log("OK: [MENU_169] frontend/creation res 800x600 -> 1920x1080 at 4 sites")
+        log(f"OK: [MENU_169] CreateWindowExA args forced to {_rw}x{_rh} (@0x5f2220/0x5f2233)")
+        log(f"OK: [MENU_169] frontend/creation res 800x600 -> {_rw}x{_rh} at 4 sites")
 
     if dst is not None:
         open(dst, 'wb').write(d)
@@ -231,4 +252,5 @@ if __name__ == '__main__':
               choke=os.environ.get('CHOKE', '1') != '0',
               ws169=os.environ.get('WS169', '1') != '0',
               res_w=int(os.environ.get('RES_W', '1920')),
-              res_h=int(os.environ.get('RES_H', '1080')))
+              res_h=int(os.environ.get('RES_H', '1080')),
+              borderless=os.environ.get('BORDERLESS', '0') == '1')

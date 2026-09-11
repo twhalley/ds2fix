@@ -21,9 +21,22 @@ sys.path.insert(0, str(ROOT))
 
 from ds2fix_core import __version__, tank, mods, exe_patch  # noqa: E402
 
-# A pristine exe/tank, if present on this machine (dev only).
-_PRISTINE_EXE = Path("/run/media/legion/4tb_btrfs/Games/ds2-gog/prefix/drive_c/Games/Dungeon Siege II/"
-                     "DungeonSiege2.exe.ds2fix-pristine")
+# A pristine exe, if present on this machine (dev only): $DS2_PRISTINE_EXE, the Linux dev path, or the
+# pinned/auto-detected install's `.ds2fix-pristine` backup (Windows dev box). Never shipped/committed.
+def _find_pristine_exe():
+    cands = [Path(os.environ["DS2_PRISTINE_EXE"])] if os.environ.get("DS2_PRISTINE_EXE") else []
+    cands.append(Path("/run/media/legion/4tb_btrfs/Games/ds2-gog/prefix/drive_c/Games/Dungeon Siege II/"
+                      "DungeonSiege2.exe.ds2fix-pristine"))
+    try:
+        import ds2fix
+        gd = ds2fix.detect_gamedir(None, pin=False)
+        cands.append(ds2fix.pristine_paths(gd)[0])
+    except (SystemExit, Exception):  # noqa: BLE001 — no install here: fine, tests skip
+        pass
+    return next((c for c in cands if c.is_file()), cands[-1])
+
+
+_PRISTINE_EXE = _find_pristine_exe()
 
 
 class TestVersion(unittest.TestCase):
@@ -52,6 +65,21 @@ class TestTankTransform(unittest.TestCase):
         out = tank.scale_center(src, 1.5, scale_object_view=True, fill_object_view=True)
         self.assertIn(b"rect = 0,0,%d,%d" % (tank.CW, tank.CH), out)
 
+    def test_canvas_param_centres_into_given_client_size(self):
+        # Windows borderless 2560x1440: 800x600 @2.0 = 1600x1200 -> centred at (480,120)
+        src = b"[t:window,n:w]\nrect = 0,0,800,600;\n"
+        self.assertIn(b"rect = 480,120,2080,1320", tank.scale_center(src, 2.0, canvas=(2560, 1440)))
+        # default canvas is unchanged (Linux 1912x1046 client of a captioned 1920x1080 window)
+        self.assertEqual(tank.scale_center(src, 1.5), tank.scale_center(src, 1.5, canvas=(1912, 1046)))
+        # the version-label override anchors to the canvas' right edge
+        lab = b"[t:text,n:text_version]\nrect = 1,576,284,599;\n"
+        self.assertIn(b"rect = 2238,12,2548,40", tank.scale_center(lab, 2.0, canvas=(2560, 1440)))
+        self.assertIn(b"rect = 1590,12,1900,40", tank.scale_center(lab, 1.5))
+        # fill stretches to the given canvas
+        mv = b"[t:object_view,n:map_view]\nrect = 0,0,800,600;\n"
+        self.assertIn(b"rect = 0,0,2560,1440",
+                      tank.scale_center(mv, 2.0, scale_object_view=True, fill_object_view=True, canvas=(2560, 1440)))
+
     def test_is_map_target(self):
         self.assertTrue(tank._is_map_target("ui/interfaces/backend/journal/books/mapbook/mapbook.gas"))
         self.assertTrue(tank._is_map_target("ui/interfaces/backend/teleport/teleport.gas"))
@@ -63,6 +91,26 @@ class TestTankTransform(unittest.TestCase):
         self.assertIn(b"text_ds2fix", once)
         self.assertIn(b"ds2fix 0.1.5", once)
         self.assertEqual(once, tank.insert_overlay(once, "0.1.5"))   # second call is a no-op
+
+
+class TestLauncherDefaults(unittest.TestCase):
+    def test_auto_scale_and_canvas(self):
+        import ds2fix
+        self.assertEqual(ds2fix.auto_scale(1080), 1.5)
+        self.assertEqual(ds2fix.auto_scale(1440), 2.0)
+        self.assertEqual(ds2fix.auto_scale(720), 1.0)
+        self.assertEqual(ds2fix.canvas_for(1920, 1080, borderless=False), (1912, 1046))   # Linux legacy
+        self.assertEqual(ds2fix.canvas_for(2560, 1440, borderless=True), (2560, 1440))    # Windows
+
+    def test_play_command_windows_is_borderless_windowed(self):
+        import ds2fix
+        if not ds2fix.IS_WINDOWS:
+            self.skipTest("Windows launch path")
+        cmd, env, note = ds2fix.play_command(Path("C:/game"), 2560, 1440, 2560, 1440, False)
+        self.assertIn("fullscreen=false", cmd)
+        self.assertIn("width=2560", cmd)
+        self.assertIn("highdpiaware", env.get("__COMPAT_LAYER", "").lower())
+        self.assertIn("borderless", note)
 
 
 class TestMods(unittest.TestCase):
@@ -136,6 +184,18 @@ class TestExePatch(unittest.TestCase):
         # re-patching the pristine input must be byte-stable
         again = exe_patch.patch_exe(str(_PRISTINE_EXE), None, log=lambda m: None)
         self.assertEqual(bytes(patched), bytes(again))
+
+    def test_window_style_captioned_vs_borderless(self):
+        fo = 0x5ebc45 - 0x400000
+        pristine = _PRISTINE_EXE.read_bytes()
+        self.assertEqual(pristine[fo:fo + 4], (0x10ce0000).to_bytes(4, "little"), "pristine style imm changed")
+        captioned = exe_patch.patch_exe(str(_PRISTINE_EXE), None, log=lambda m: None)
+        self.assertEqual(captioned[fo:fo + 4], (0x10ca0000).to_bytes(4, "little"), "THICKFRAME not dropped")
+        borderless = exe_patch.patch_exe(str(_PRISTINE_EXE), None, borderless=True, log=lambda m: None)
+        self.assertEqual(borderless[fo:fo + 4], (0x90000000).to_bytes(4, "little"), "WS_POPUP not applied")
+        # the two variants differ ONLY in that one style immediate
+        diff = [i for i, (a, b) in enumerate(zip(captioned, borderless)) if a != b]
+        self.assertTrue(diff and all(fo <= i < fo + 4 for i in diff), f"unexpected extra diffs: {diff[:8]}")
 
     def test_save_footprint_check_bypassed(self):
         # IsContentCrcAcceptable (FUN_004139d0) must be forced to "mov al,1 ; ret 4" so saves always

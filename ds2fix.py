@@ -2,8 +2,8 @@
 """ds2fix — one-command patcher + launcher for Dungeon Siege II (GOG). Cross-platform (Linux/Windows).
 
 Idempotently rebuilds the patched exe + tank from a PRISTINE backup every run (safe to re-run; never
-patches an already-patched file). Then launches — fullscreen via gamescope+FSR on Linux/Wine, or native
-fullscreen on Windows.
+patches an already-patched file). Then launches — fullscreen via gamescope+FSR on Linux/Wine, or a
+borderless window at the monitor's resolution on Windows (alt-tab friendly; no exclusive mode switch).
 
   ds2fix detect                 # find + report the install
   ds2fix patch                  # patch (16:9), from pristine
@@ -157,6 +157,58 @@ def _linux_dirs():
               Path("/run/media"), Path("/mnt"), Path("/media")):
         if r.exists():
             yield from _find_prefixes(r)
+
+
+# ---------- display ----------
+def _monitor_res():
+    """Primary monitor's current PHYSICAL resolution. Windows: EnumDisplaySettings (independent of the
+    display-scaling/DPI virtualisation a non-DPI-aware process would see). Elsewhere: 1920x1080."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            class DEVMODEW(ctypes.Structure):
+                _fields_ = [("dmDeviceName", ctypes.c_wchar * 32), ("dmSpecVersion", ctypes.c_ushort),
+                            ("dmDriverVersion", ctypes.c_ushort), ("dmSize", ctypes.c_ushort),
+                            ("dmDriverExtra", ctypes.c_ushort), ("dmFields", ctypes.c_ulong),
+                            ("dmPosition", ctypes.c_long * 2), ("dmDisplayOrientation", ctypes.c_ulong),
+                            ("dmDisplayFixedOutput", ctypes.c_ulong), ("dmColor", ctypes.c_short),
+                            ("dmDuplex", ctypes.c_short), ("dmYResolution", ctypes.c_short),
+                            ("dmTTOption", ctypes.c_short), ("dmCollate", ctypes.c_short),
+                            ("dmFormName", ctypes.c_wchar * 32), ("dmLogPixels", ctypes.c_ushort),
+                            ("dmBitsPerPel", ctypes.c_ulong), ("dmPelsWidth", ctypes.c_ulong),
+                            ("dmPelsHeight", ctypes.c_ulong), ("dmDisplayFlags", ctypes.c_ulong),
+                            ("dmDisplayFrequency", ctypes.c_ulong), ("dmICMMethod", ctypes.c_ulong),
+                            ("dmICMIntent", ctypes.c_ulong), ("dmMediaType", ctypes.c_ulong),
+                            ("dmDitherType", ctypes.c_ulong), ("dmReserved1", ctypes.c_ulong),
+                            ("dmReserved2", ctypes.c_ulong), ("dmPanningWidth", ctypes.c_ulong),
+                            ("dmPanningHeight", ctypes.c_ulong)]
+            dm = DEVMODEW(); dm.dmSize = ctypes.sizeof(DEVMODEW)
+            ENUM_CURRENT_SETTINGS = -1
+            if ctypes.windll.user32.EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, ctypes.byref(dm)) \
+                    and dm.dmPelsWidth and dm.dmPelsHeight:
+                return int(dm.dmPelsWidth), int(dm.dmPelsHeight)
+        except Exception:  # noqa: BLE001 — any failure just falls back to the 1080p default
+            pass
+    return 1920, 1080
+
+
+def default_res():
+    """Default render resolution: the monitor's native res on Windows (borderless window fills it);
+    1920x1080 on Linux (gamescope upscales to --out)."""
+    return _monitor_res() if IS_WINDOWS else (1920, 1080)
+
+
+def auto_scale(res_h):
+    """UI scale for the 16:9 menus when none is given: 1.5 at 1080p (the tuned value), proportional
+    elsewhere (1.0 @720p, 2.0 @1440p, 3.0 @2160p)."""
+    return round(res_h / 720, 2)
+
+
+def canvas_for(res_w, res_h, borderless):
+    """The game window's CLIENT size — what the exe's dynamic UI canvas tracks and the tank transform
+    centres into. Borderless (WS_POPUP): exactly the render res. Captioned window (Linux/Wine + gamescope):
+    minus the frame — 1920x1080 -> 1912x1046, the measured value the transform was tuned against."""
+    return (res_w, res_h) if borderless else (res_w - 8, res_h - 34)
 
 
 # ---------- config / pinned install ----------
@@ -341,16 +393,24 @@ def restore_saves(gamedir, which=None, log=print):
 
 
 # ---------- actions ----------
-def do_patch(gamedir, res_w, res_h, scale, menu169, log=print):
+def do_patch(gamedir, res_w, res_h, scale, menu169, log=print, borderless=None):
+    """Rebuild exe + tank from pristine. `scale=None` -> auto (see auto_scale). `borderless=None` ->
+    the platform default: borderless window on Windows, captioned (gamescope-managed) window on Linux."""
+    if borderless is None:
+        borderless = IS_WINDOWS
+    if scale is None:
+        scale = auto_scale(res_h)
+    canvas = canvas_for(res_w, res_h, borderless)
     backup_saves(gamedir, log)   # safety net: never lose a save to a patch/update
     pexe, ptank = ensure_backup(gamedir, log)
     exe, tank = gamedir / EXE_NAME, gamedir / TANK_REL
-    log(f"patching exe (MENU_169={int(menu169)}, {res_w}x{res_h}) ...")
-    patch_exe(str(pexe), str(exe), menu169=menu169, res_w=res_w, res_h=res_h,
+    log(f"patching exe (MENU_169={int(menu169)}, {res_w}x{res_h}, "
+        f"{'borderless' if borderless else 'captioned'} window) ...")
+    patch_exe(str(pexe), str(exe), menu169=menu169, res_w=res_w, res_h=res_h, borderless=borderless,
               log=lambda m: log("  " + m))
-    log(f"patching tank (UI scale {scale}) ...")
+    log(f"patching tank (UI scale {scale}, canvas {canvas[0]}x{canvas[1]}) ...")
     shutil.copy2(ptank, tank)
-    edit_tank(str(tank), scale=scale, backup=False, log=lambda m: log("  " + m))
+    edit_tank(str(tank), scale=scale, backup=False, canvas=canvas, log=lambda m: log("  " + m))
     log("patch complete.")
 
 
@@ -379,7 +439,10 @@ def do_info(gamedir, log=print):
     from ds2fix_core import mods as _mods
     inst = _mods.installed_mods(gamedir)
     log(f"mods     : {', '.join(inst) if inst else 'none'}")
-    log(f"platform : {'windows (native launch)' if IS_WINDOWS else 'linux (wine/gamescope launch)'}")
+    if IS_WINDOWS:
+        mw, mh = _monitor_res()
+        log(f"display  : {mw}x{mh} (default render res; borderless window)")
+    log(f"platform : {'windows (borderless window, native D3D9)' if IS_WINDOWS else 'linux (wine/gamescope launch)'}")
 
 
 def _wineprefix_for(gamedir):
@@ -396,14 +459,27 @@ def _wineprefix_for(gamedir):
 
 
 def play_command(gamedir, res_w, res_h, out_w, out_h, fsr, maxfps=120):
-    """Build the launch (cmd, env, note) for the current OS. Native fullscreen on Windows;
+    """Build the launch (cmd, env, note) for the current OS. Borderless window on Windows;
     gamescope+FSR (or plain windowed) via Wine on Linux. `maxfps` uncaps DS2's default 75fps limit
     (0 = fully uncapped)."""
     env = dict(os.environ)
     if IS_WINDOWS:
+        # Mirrors the Linux setup (windowed game, compositor presents it fullscreen): the exe is patched
+        # WS_POPUP (borderless), we launch `fullscreen=false` at the render res, and the launcher parks
+        # the window at (0,0) -> borderless fullscreen when res == monitor, clean alt-tab, no exclusive
+        # mode switch. (Exclusive `fullscreen=true` on native Windows ran the whole frontend at 800x600,
+        # ignoring the MENU_169 patches, and can't be captured/alt-tabbed cleanly.)
+        # DS2 isn't DPI-aware: at >100% display scaling Windows would bitmap-scale its window (a
+        # 1920x1080 window rendering at 3840x2160 on a 200% laptop). The HighDpiAware compat layer, set
+        # via the documented __COMPAT_LAYER env var (process-scoped; no registry), makes it 1:1.
         cmd = [str(gamedir / EXE_NAME), "nospacecheck=true", f"width={res_w}",
-               f"height={res_h}", "fullscreen=true", "vsync=true", f"maxfps={maxfps}"]
-        return cmd, env, "native fullscreen"
+               f"height={res_h}", "fullscreen=false", "vsync=true", f"maxfps={maxfps}"]
+        layers = env.get("__COMPAT_LAYER", "")
+        if "highdpiaware" not in layers.lower():
+            env["__COMPAT_LAYER"] = (layers + " HighDpiAware").strip()
+        mw, mh = _monitor_res()
+        fit = "borderless fullscreen" if (res_w, res_h) == (mw, mh) else f"borderless window, centred on {mw}x{mh}"
+        return cmd, env, f"{res_w}x{res_h} {fit}"
     prefix = _wineprefix_for(gamedir)
     if prefix:
         env["WINEPREFIX"] = prefix
@@ -427,6 +503,53 @@ def play_command(gamedir, res_w, res_h, out_w, out_h, fsr, maxfps=120):
         gs += ["-f", "--"]
         return gs + game_args, env, f"render {res_w}x{res_h} -> {out_w}x{out_h}, gamescope{'+FSR' if fsr else ''}"
     return game_args, env, "windowed (gamescope not found)"
+
+
+def _win_place_window(pid, res_w, res_h, log, timeout=90):
+    """Windows: wait for the game's top-level window (class gpgwndclass_*), then MOVE it (never resize —
+    DS2 doesn't rebuild its swapchain on WM_SIZE) so it is centred on the primary monitor, i.e. at (0,0)
+    when the render res == the monitor (borderless fullscreen), and bring it to the front. Done from the
+    launcher, so the game binary needs no positioning patch. Per-thread DPI awareness keeps the
+    coordinates physical without touching the process (the Tk GUI shares it)."""
+    import ctypes, ctypes.wintypes as wt
+    user32 = ctypes.windll.user32
+    prev = None
+    try:
+        user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        prev = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))   # PER_MONITOR_AWARE_V2
+    except Exception:  # noqa: BLE001 — pre-1607 Windows: coordinates stay logical, still correct at 100%
+        pass
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    found = []
+
+    def cb(hwnd, _):
+        p = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+        if p.value == pid and user32.IsWindowVisible(hwnd):
+            cls = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, cls, 64)
+            if cls.value.lower().startswith("gpgwndclass"):
+                found.append(hwnd)
+        return True
+    t0 = time.monotonic()
+    while not found and time.monotonic() - t0 < timeout:
+        user32.EnumWindows(WNDENUMPROC(cb), 0)
+        if not found:
+            time.sleep(0.5)
+    try:
+        if found:
+            hwnd = found[0]
+            sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+            x, y = max(0, (sw - res_w) // 2), max(0, (sh - res_h) // 2)
+            SWP_NOSIZE, SWP_NOZORDER = 0x0001, 0x0004
+            user32.SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER)
+            user32.SetForegroundWindow(hwnd)
+            log(f"window placed at {x},{y}" + (" (borderless fullscreen)" if (x, y) == (0, 0) else " (centred)"))
+        else:
+            log("game window not seen within the timeout — left as launched")
+    finally:
+        if prev:
+            user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(prev))
 
 
 def _ds2_running():
@@ -495,8 +618,19 @@ def _supervise_gamescope(proc, prefix, log):
 def do_play(gamedir, res_w, res_h, out_w, out_h, fsr, maxfps=120, spawn=False, log=print):
     cmd, env, note = play_command(gamedir, res_w, res_h, out_w, out_h, fsr, maxfps)
     log(f"launching ({note}) ...")
-    uses_gamescope = (not IS_WINDOWS) and cmd and cmd[0] == "gamescope"
-    if not uses_gamescope:   # native (Windows) / plain windowed — nothing to supervise
+    if IS_WINDOWS:
+        # Borderless window: spawn, then place the window once it exists (GUI: in the background; CLI:
+        # block until the game exits, like the Linux gamescope supervisor).
+        proc = subprocess.Popen(cmd, cwd=str(gamedir), env=env)
+        if spawn:
+            import threading
+            threading.Thread(target=_win_place_window, args=(proc.pid, res_w, res_h, log), daemon=True).start()
+            return proc
+        _win_place_window(proc.pid, res_w, res_h, log)
+        proc.wait()
+        return None
+    uses_gamescope = cmd and cmd[0] == "gamescope"
+    if not uses_gamescope:   # plain windowed Wine — nothing to supervise
         if spawn:
             return subprocess.Popen(cmd, cwd=str(gamedir), env=env)
         os.chdir(gamedir)
@@ -531,9 +665,12 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def add_patch_opts(sp):
-        sp.add_argument("--res", type=_res, default=(1920, 1080),
-                        metavar="WxH", help="render resolution (default 1920x1080)")
-        sp.add_argument("--scale", type=float, default=1.5, help="UI scale for the 16:9 menus (default 1.5)")
+        dw, dh = default_res()
+        sp.add_argument("--res", type=_res, default=None, metavar="WxH",
+                        help=f"render resolution (default {dw}x{dh}"
+                             f"{': your monitor, borderless fullscreen' if IS_WINDOWS else ''})")
+        sp.add_argument("--scale", type=float, default=None,
+                        help="UI scale for the 16:9 menus (default: auto = height/720, i.e. 1.5 at 1080p)")
         sp.add_argument("--no-menu169", action="store_true",
                         help="keep the native 800x600 menu (restores the 3D model previews)")
 
@@ -588,11 +725,13 @@ def main(argv=None):
     elif args.cmd == "restore":
         do_restore(gamedir)
     elif args.cmd == "patch":
-        do_patch(gamedir, args.res[0], args.res[1], args.scale, not args.no_menu169)
+        rw, rh = args.res or default_res()
+        do_patch(gamedir, rw, rh, args.scale, not args.no_menu169)
     elif args.cmd == "play":
+        rw, rh = args.res or default_res()
         if not args.no_patch:
-            do_patch(gamedir, args.res[0], args.res[1], args.scale, not args.no_menu169)
-        do_play(gamedir, args.res[0], args.res[1], args.out[0], args.out[1], not args.no_fsr, args.maxfps)
+            do_patch(gamedir, rw, rh, args.scale, not args.no_menu169)
+        do_play(gamedir, rw, rh, args.out[0], args.out[1], not args.no_fsr, args.maxfps)
     elif args.cmd == "mods":
         from ds2fix_core import mods as _mods
         if args.modcmd == "list":

@@ -9,8 +9,13 @@ try:
 except ImportError:
     from _version import __version__             # run directly as a script
 
+# Default UI canvas = the CLIENT area of the 1920x1080 game window on Linux/Wine (a captioned window:
+# 1920-8 x 1080-34). The exe's dynamic-canvas patch makes the engine's UI canvas track the live window
+# rect, so the tank transform must centre into the SAME size. Pass `canvas=(w,h)` to override — the CLI
+# derives it from --res and the window style (borderless on Windows -> canvas == res exactly).
 CW, CH = 1912, 1046
-OVERRIDES = { (1, 576, 284, 599): (1590, 12, 1900, 40) }   # text_version "ds2fix 0.1" -> top-right corner
+# text_version "ds2fix 0.1" -> top-right corner, anchored to the canvas' right edge.
+OVERRIDES = { (1, 576, 284, 599): lambda cw, ch: (cw - 322, 12, cw - 12, 40) }
 
 TARGETS = [
     'ui/interfaces/frontend/main_menu/main_menu.gas',
@@ -97,13 +102,14 @@ if OVERLAY_TARGET not in TARGETS:
 BLK = 0x4000  # 16384-byte uncompressed block per zlib chunk
 
 
-def scale_center(u, scale, iw=800, ih=600, scale_object_view=False, fill_object_view=False):
-    ox = (CW - iw*scale) / 2      # centre the intended canvas (iw x ih) inside the 1912x1046 output
-    oy = (CH - ih*scale) / 2
+def scale_center(u, scale, iw=800, ih=600, scale_object_view=False, fill_object_view=False, canvas=None):
+    cw, ch = canvas or (CW, CH)
+    ox = (cw - iw*scale) / 2      # centre the intended canvas (iw x ih) inside the cw x ch output
+    oy = (ch - ih*scale) / 2
     def repl(m):
         x1,y1,x2,y2 = (int(v) for v in m.group(1,2,3,4))
         if (x1,y1,x2,y2) in OVERRIDES:
-            return b'rect = %d,%d,%d,%d' % OVERRIDES[(x1,y1,x2,y2)]
+            return b'rect = %d,%d,%d,%d' % OVERRIDES[(x1,y1,x2,y2)](cw, ch)
         return b'rect = %d,%d,%d,%d' % (round(ox+x1*scale), round(oy+y1*scale),
                                         round(ox+x2*scale), round(oy+y2*scale))
     # An [t:object_view] is a live 3D/cloth viewport (a model preview OR the journal/teleport map). Whether
@@ -123,7 +129,7 @@ def scale_center(u, scale, iw=800, ih=600, scale_object_view=False, fill_object_
             elem = m.group(1).strip()
         if elem == b'object_view' and fill_object_view:
             out.append(re.sub(rb'rect = -?\d+,\s*-?\d+,\s*-?\d+,\s*-?\d+',
-                              b'rect = 0,0,%d,%d' % (CW, CH), line))   # full-screen map fills the client
+                              b'rect = 0,0,%d,%d' % (cw, ch), line))   # full-screen map fills the client
         elif elem == b'object_view' and not scale_object_view:
             out.append(line)                      # verbatim: never touch a frontend preview viewport
         else:
@@ -193,7 +199,7 @@ def _target_list(files):
     return targets
 
 
-def _edit_one(d, files, offs, path, scale, version, write_end, log):
+def _edit_one(d, files, offs, path, scale, version, write_end, log, canvas=None):
     """Transform one interface in `d` and write it back — in its slot if it fits, else relocated to the
     end of the tank (removes the per-slot budget limit). Raises on any problem (caller skips it)."""
     f = files[path]; ct = f['ct']; base = f['dataoff']+0x33c; size = f['size']
@@ -212,7 +218,7 @@ def _edit_one(d, files, offs, path, scale, version, write_end, log):
         # Cloth-map screens: scale+center the whole screen INCLUDING the [t:object_view] map viewport, so the
         # map grows with its frame. (Blanking on scale was a DXVK bug, fixed by forcing wined3d.)
         u2 = scale_center(u, scale, iw, ih, scale_object_view=True,
-                          fill_object_view=path in MAP_FILL_TARGETS)
+                          fill_object_view=path in MAP_FILL_TARGETS, canvas=canvas)
     else:
         if path == MP_PROVIDER:
             u = customize_mp_provider(u)
@@ -222,7 +228,7 @@ def _edit_one(d, files, offs, path, scale, version, write_end, log):
         # dir.lqd22 recompile that used to hide the save party list (bug-1) — neutralised by the exe
         # save-footprint bypass. Result: the preview model renders in its panel instead of at the native
         # 800x600 corner. See docs/MAP_PORTING_TODO.md and the object_view notes in scale_center().
-        u2 = scale_center(u, scale, iw, ih, scale_object_view=True)
+        u2 = scale_center(u, scale, iw, ih, scale_object_view=True, canvas=canvas)
     if 'frontend_help' in path:   # tight slot: drop center_height (minor vertical-align) to fit
         u2 = re.sub(rb'[ \t]*center_height = true;\r?\n', b'', u2)
     blocks = [u2[i:i+BLK] for i in range(0, len(u2), BLK)] or [b'']
@@ -263,10 +269,12 @@ def _edit_one(d, files, offs, path, scale, version, write_end, log):
     log(f"OK {path}: {len(u)}->{len(u2)}B, {nch} chunk(s), {where}")
 
 
-def edit_tank(tank, scale=1.5, backup=True, version=None, log=print):
+def edit_tank(tank, scale=1.5, backup=True, version=None, log=print, canvas=None):
     """Edit a DSg2Tank (.ds2res) in place: scale/center the menu interfaces + inject the overlay.
-    Writes a `.pre-edit.bak` next to it (if backup). Requires the exe CRC check disabled."""
+    Writes a `.pre-edit.bak` next to it (if backup). Requires the exe CRC check disabled.
+    `canvas=(w,h)` = the game window's client size to centre into (default: the Linux 1912x1046)."""
     version = version or __version__
+    cw, ch = canvas or (CW, CH)
     d = bytearray(open(tank,'rb').read())
     files, offs = parse(d)
     if backup:
@@ -277,13 +285,13 @@ def edit_tank(tank, scale=1.5, backup=True, version=None, log=print):
         if path not in files:
             log(f"SKIP {path}: not in tank"); skipped += 1; continue
         try:
-            _edit_one(d, files, offs, path, scale, version, write_end, log)
+            _edit_one(d, files, offs, path, scale, version, write_end, log, canvas=(cw, ch))
             ok += 1
         except Exception as e:  # noqa: BLE001 — one bad interface must not abort the whole build
             log(f"SKIP {path}: {e}"); skipped += 1
     open(tank,'wb').write(d)
     _bak = f"; backup {tank}.pre-edit.bak" if backup else ""
-    log(f"PATCHED {tank} (scale x{scale}; {ok} ok, {skipped} skipped){_bak}")
+    log(f"PATCHED {tank} (scale x{scale}, canvas {cw}x{ch}; {ok} ok, {skipped} skipped){_bak}")
 
 
 if __name__ == '__main__':
