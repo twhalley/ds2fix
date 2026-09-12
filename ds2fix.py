@@ -407,6 +407,9 @@ def do_patch(gamedir, res_w, res_h, scale, menu169, log=print, borderless=None):
     log(f"patching exe (MENU_169={int(menu169)}, {res_w}x{res_h}, "
         f"{'borderless' if borderless else 'captioned'} window) ...")
     patch_exe(str(pexe), str(exe), menu169=menu169, res_w=res_w, res_h=res_h, borderless=borderless,
+              canvas_w=canvas[0], canvas_h=canvas[1],
+              dyncanvas=os.environ.get("DS2FIX_DYNCANVAS", "1") != "0",   # debug/bisect toggle
+              portrait_rect=os.environ.get("DS2FIX_PORTRAIT_RECT", "0") == "1",   # experimental (TODO #4)
               log=lambda m: log("  " + m))
     log(f"patching tank (UI scale {scale}, canvas {canvas[0]}x{canvas[1]}) ...")
     shutil.copy2(ptank, tank)

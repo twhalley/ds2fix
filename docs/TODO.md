@@ -44,29 +44,48 @@
    rect enlarges the frame but the icon grid won't follow — the classic DS2 in-game-UI-scaling wall. Needs a
    grid-aware transform, not a blanket rect scale. (Good news for testing: xdotool `i`/`j` keys DO reach
    gameplay, so panels can be driven + screenshotted.)
-4. **First party portrait (leader) renders offset+green** — *root-caused 2026-09-04, believed NOT
-   data-fixable.* Member #1's HUD portrait (`awp_itemslot_portrait_1`, rect 6,14,51,59 in
-   `character_awp.gas`) shows the leader's face pushed to the bottom of the frame (elf ear / head-top just
-   peeking) with the render-target's green clear-color filling the space above; members #2–8 render centered
-   and fine. **Every UI-data lever was tested on the live tank (2026-09-04), each with the `dir.lqd22`
-   FILETIME recompile-bust so the edit actually applied:** (a) add the `index=0; layer=member_1;` binding
-   that _2..8 carry (`member_1` is a valid layer, referenced by multi_inventories/member_labels/
-   minigame_chooser) → **no change**; (b) force-recompile at original coords → face draws but stays low +
-   green above; (c) enlarge rect to 140,140 → the **whole face scales up with the rect**, green headroom
-   included. That last point is decisive: the itemslot **scales its content to the rect**, so the green is
-   *inside the leader's live render texture* (head framed too low in its own target) — no rect move/resize or
-   binding can fix internal framing. It's the engine's **live leader-portrait camera (party slot 0) under
-   wined3d** — members 2–8 are framed correctly, only slot 0 is wrong. **Strong hypothesis: renders correctly
-   on native Windows D3D9** (game shipped fine on Windows) → **verify during the Windows test (#6)**;
-   likely resolves there with no code change. Cosmetic; character is fully in the party + playable. All
-   experiments reverted to the clean patched tank.
+4. **Party leader (hero) portrait blank / mis-framed** — *NOT a Wine quirk: reproduced on native Windows 11
+   + D3D9 (2026-09-11/12), and it is a STOCK DS2 bug* (DS2TroubleshootingGuide §4.1 "black portraits above
+   1280 px wide"; Nexus mod #146 "High resolution Portrait Fix" targets it, with mixed reports at 1440p/Win11).
+   Windows symptom: slot 1 = green frame with a **black** interior; members 2–8 fine. Wine: face pushed low
+   + green clear.
+   **Bisect on Windows — all negative, none of our patches is the cause:** full patch @2560x1440 and
+   @1920x1080; `DS2FIX_DYNCANVAS=0` (SetScreenSize stub off); `--no-menu169` (800x600 frontend; loaded
+   party); frontend grab rect mirrored to the in-game formula (`DS2FIX_PORTRAIT_RECT=1`, **newly created**
+   party). Companions always fine.
+   **Mechanism (static RE, 2026-09-11 workflow; code in `exe_patch.py` PATCH PORTRAIT):** a DS2 portrait is a
+   64x64 **backbuffer pixel grab** taken once after an ortho render of the head (`0x5011f0`: viewport_w/h ×
+   `ortho_matrix` = metres/pixel → fixed pixel size, viewport-centred), stored as texture `"portrait"` on the
+   GoActor (+0x24). There are TWO generators: the **frontend** one (`RCGeneratePortrait` → `FUN_00443480`)
+   grabs a rect **hard-coded for 800x600**, {380,277}-{444,341} (imm32 @0x4435ac/b3/ba/c1; pixel read
+   `0x510b00`, texture `0x510900`, then `Player::SetPortrait` @0x8268f1), persisted as `portrait-0.bmp` in the
+   party file and reloaded via `load://portrait-%d.bmp`. The **in-game** one (`FUN_004f25bb`) derives the rect
+   from the live window ([0xbcb28c]+0xac..): x=trunc(w×0.00125×380), y=trunc(h×0.0016667×277), +64, plus fudge
+   for 1280x1024 / 1024x768 / 640x480 — companions use this and look right. The hero's actor already carries a
+   portrait texture after load, so the in-game lazy regen (`0x41a754`, `0x4f2e6a`; gated on +0x24 != 0) SKIPS
+   it ⇒ "slot 1 wrong, 2–8 right" is **hero-vs-companion**, not slot 1. Nothing in the tank can fix it
+   (`character_awp.gas` bindings/rects, `portrait_camera` — all tested or shown irrelevant; a tank-side
+   `ortho_matrix` rescale only zooms the head).
+   **Still open:** mirroring the frontend rect did NOT cure a new party on Windows, so the frontend pass must
+   render the head elsewhere or fail the read above 1280 wide. Next candidates: (a) the frontend portrait
+   pass viewport — `0x50b330(1)` / `0x513640` ("begin/end portrait pass" on renderer [0xbcb1ac]+0x24c): an
+   800x600 sub-viewport or separate RT?; (b) `0x510b00` / `0x510900` — a fixed-size scratch surface or a
+   1024/1280 bound (the stock ">1280 wide" threshold is the strongest clue); (c) alternative: NOP the
+   frontend `Player::SetPortrait` call @0x44362a (`e8 c2 32 3e 00` → 5×`90`) so the hero stays portrait-less
+   and the (working) in-game generator makes it — side effect: no leader thumbnail in the load list until the
+   first in-game save.
+   **Stock workaround for users:** launch at ≤1280 wide (e.g. `--res 1024x768`), create/load the party, then
+   raise the resolution in the in-game Options. Cosmetic; the character is fully playable.
 5. **DXVK for performance** — *re-tested 2026-07-23: DXVK v2.7.1 renders the `object_view` viewports
    correctly* (the old blank-viewport bug was specific to v2.6.2). Verified: main-menu preview, journal, and
    gameplay all render under DXVK v2.7.1 (from `GE-Proton10-34/.../dxvk/i386-windows/d3d9.dll`). The launcher
    now supports it as an **opt-in** (`DS2_RENDERER=dxvk`, or just drop a DXVK `d3d9.dll` into the game dir);
    wined3d stays the default. To promote DXVK to default, first re-verify the **cloth Map tab** under DXVK
    (the one screen not yet checked — it was the original v2.6.2 casualty).
-6. **Windows end-to-end test** — patcher core is cross-platform; verify a real Windows run.
+6. **Windows end-to-end test** — *done 2026-09-11/12 on Windows 11 (GOG, Intel UHD 620, 2560x1440 @200%):*
+   detection, patch/restore/idempotence, borderless launch at 1440p + centred 1080p, 16:9 menus scaled
+   (1.5×/2×), previews, MP button, overlay, save list/load, gameplay HUD — all OK. Results in
+   `docs/WINDOWS_TEST.md`. Not yet checked on Windows: Journal→Map, the GUI end-to-end, 4:3 modes.
 7. **Gamescope fullscreen present flake** — on KDE Wayland `ds2fix play` intermittently hits "Compositor
    released us but we were not acquired" and the game bounces (teardown is clean, no lingering). Windowed
    launch is the reliable path meanwhile. Investigate gamescope flags / a windowed-fullscreen fallback.

@@ -5,8 +5,9 @@ fullscreen, campaign difficulties unlocked, and a "ds2fix" version label — via
 + data-side tank mods. Ships as a **cross-platform CLI + GUI** (Linux and Windows). Does **not** distribute
 the game; it patches an existing install in place, always from a pristine base.
 
-Status: **v1.0 (v0.1.7, working)** — everything below verified in-game (on Linux/Wine; Windows shares the same
-patcher core, with a native launcher).
+Status: **v1.0 (v0.1.8, working)** — everything below verified in-game on Linux/Wine **and natively on
+Windows 11** (same patcher core; the Windows launcher runs the game as a borderless window at your monitor's
+resolution — the gamescope role — so alt-tab is clean and there is no exclusive-mode switch).
 
 ## What works
 
@@ -31,7 +32,7 @@ patcher core, with a native launcher).
 | Optional mod installer (Storage Vault, HD Textures) — SHA512-verified, non-bundled | `ds2fix mods` + GUI |
 | Configurable render + output resolution | `RES_W/RES_H`, `OUT_W/OUT_H` env |
 | Configurable UI scale (menus + ESC menu) | `DS2_UISCALE` env (default 1.5) |
-| Fullscreen, upscaled to monitor | `ds2fix.sh` / `play-ds2.sh` (gamescope + FSR) |
+| Fullscreen, upscaled to monitor | Linux: `ds2fix.sh` / `play-ds2.sh` (gamescope + FSR); Windows: borderless window at monitor res (`WS_POPUP` exe patch + launcher placement) |
 | Version label reads "ds2fix 0.1.5" | version-string patch (exe) |
 
 ## Quick start
@@ -44,12 +45,12 @@ lets you pick a resolution (16:9 or 4:3 presets) / UI scale / 16:9-menu, then **
 
 ```
 ds2fix detect                   # find + report the install
-ds2fix play                     # patch (16:9) + launch — 1920x1080, fullscreen
+ds2fix play                     # patch (16:9) + launch — Linux: 1920x1080 via gamescope; Windows: your monitor's res, borderless
 ds2fix play --res 1440x1080     # 4:3 render (Linux: gamescope pillarboxes)
 ds2fix play --out 3840x2160     # 4K output (Linux gamescope)
 ds2fix play --no-menu169        # native 800x600 menu (restores the 3D model previews)
 ds2fix play --maxfps 0          # uncap the framerate (DS2 defaults to 75; default here is 120)
-ds2fix patch --scale 1.75       # patch only, bigger menus + ESC menu (default 1.5)
+ds2fix patch --scale 1.75       # patch only, bigger menus + ESC menu (default: auto = height/720, i.e. 1.5 @1080p, 2.0 @1440p)
 ds2fix mods list                # optional mods: what's available + installed
 ds2fix mods install hd-textures # install a downloaded, SHA512-verified mod into Resources/
 ds2fix mods remove hd-textures  # cleanly uninstall it
@@ -78,7 +79,9 @@ Steam libraries, Heroic (GOG-on-Linux) install records, and a bounded scan of co
 (`~/.wine`, `/run/media`, `/mnt`, …). Override any time with `--gamedir <path>` or `DS2_GAMEDIR`.
 Every `patch`/`play` **idempotently rebuilds from a pristine backup**
 (captured on first run into `*.ds2fix-pristine`), so it's always reproducible and never patches an
-already-patched file. On Linux it launches fullscreen via **gamescope + FSR**; on Windows, native fullscreen.
+already-patched file. On Linux it launches fullscreen via **gamescope + FSR**; on Windows as a **borderless
+window** at the render resolution (defaults to the monitor's native res = borderless fullscreen; smaller
+resolutions are centred), DPI-aware so display scaling doesn't blur it, with menus scaled to match.
 
 ### Optional mods (non-bundled)
 
@@ -168,7 +171,6 @@ Env: `MENU_169` (0 disables the 16:9 menu), `RES_W`/`RES_H` (forced frontend res
   on exit.)
 
 ## Roadmap (backlog)
-- Windows-compatible packaging (patcher is Python/cross-platform; launcher is Linux/gamescope)
 - Re-enable Journal→Map cloth-map scaling + in-game paperdoll scaling (same object_view fix, now proven)
 - Co-op multiplayer revival (direct-IP/LAN over VPN; GameSpy master-server replacement) — GameSpy is dead
 

@@ -12,12 +12,26 @@ except ImportError:
     from _version import __version__             # run directly as a script
 
 
+def portrait_grab_rect(w, h):
+    """The 64x64 backbuffer rect DS2's IN-GAME portrait generator (FUN_004f25bb) grabs for a w x h window:
+    x = trunc(w*0.00125*380), y = trunc(h*0.0016667*277) (the float32 constants @0xaa5e44/0xaa5e3c, _ftol
+    truncation), plus GPG's per-resolution fudge. At 800x600 this is the frontend's hard-coded 380,277."""
+    x = int(w * 0.0012499999720603228 * 380.0); y = int(h * 0.0016666667070239782 * 277.0)
+    fx, fy = {(1280, 1024): (12, 16), (1024, 768): (8, 6), (640, 480): (-2, -3)}.get((int(w), int(h)), (0, 0))
+    x += fx; y += fy
+    return (x, y, x + 64, y + 64)
+
+
 def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, res_h=1080,
-              version=None, log=print, borderless=False):
+              version=None, log=print, borderless=False, dyncanvas=True, canvas_w=None, canvas_h=None,
+              portrait_rect=False):
     """Patch a pristine DungeonSiege2.exe. `orig`/`dst` are file paths (dst optional -> returns bytes).
     Returns the patched bytes. Raises AssertionError if a patch site doesn't match (wrong/patched exe).
     `borderless`: give the game window a WS_POPUP (no caption/frame) style instead of the non-resizable
-    captioned one — the Windows launcher's borderless-fullscreen mode (see PATCH WIN)."""
+    captioned one — the Windows launcher's borderless-fullscreen mode (see PATCH WIN).
+    `canvas_w/h`: the game window's CLIENT size (default: res) — what the leader-portrait grab rect is
+    computed from (see PATCH PORTRAIT). `portrait_rect=True` enables that EXPERIMENTAL patch (off by
+    default: verified NOT sufficient on native Windows). `dyncanvas=False` is a debug/bisect switch only."""
     MENU_169, CHOKE, WS169 = menu169, choke, ws169
     version = version or __version__
     with open(orig, 'rb') as _f:
@@ -182,10 +196,13 @@ def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, 
     # ---- verify + apply the two in-place patches (from pristine bytes) ----
     assert bytes(d[txt_fo(0x73be9b):txt_fo(0x73be9b)+3]) == bytes([0x8b,0x7d,0x08]), "patch-site mismatch"
     assert all(b==0xCC for b in d[txt_fo(0x73bee4):txt_fo(0x73bee4)+12]), "cave not int3"
-    d[txt_fo(0x73be9b):txt_fo(0x73be9b)+3] = bytes([0xEB,0x47,0x90])
-    cave = 0x73bee4
-    d[txt_fo(cave):txt_fo(cave)+5] = bytes([0xE9]) + rel32(cave+5, S)
-    for k in range(5,12): d[txt_fo(cave)+k] = 0xCC
+    if dyncanvas:
+        d[txt_fo(0x73be9b):txt_fo(0x73be9b)+3] = bytes([0xEB,0x47,0x90])
+        cave = 0x73bee4
+        d[txt_fo(cave):txt_fo(cave)+5] = bytes([0xE9]) + rel32(cave+5, S)
+        for k in range(5,12): d[txt_fo(cave)+k] = 0xCC
+    else:   # debug/bisect: keep SetScreenSize stock (section still appended for the MENU_169 stub)
+        log('WARN: [debug] dynamic UI canvas stub DISABLED (SetScreenSize left stock)')
 
     # ---- append the new section ----
     o = sectab + nsec*40
@@ -236,6 +253,31 @@ def patch_exe(orig, dst=None, menu169=True, choke=True, ws169=True, res_w=1920, 
         d[txt_fo(0x5f2233):txt_fo(0x5f2233)+5] = bytes([0xb8]) + NEW_W                   # mov eax,1920
         log(f"OK: [MENU_169] CreateWindowExA args forced to {_rw}x{_rh} (@0x5f2220/0x5f2233)")
         log(f"OK: [MENU_169] frontend/creation res 800x600 -> {_rw}x{_rh} at 4 sites")
+
+        # ---- PATCH PORTRAIT: the party LEADER's HUD portrait (stock DS2 bug above 1280 px wide; black on
+        # native D3D9, face-low + green clear under Wine; members 2..8 fine). A DS2 portrait is a 64x64
+        # backbuffer pixel-grab taken once after an ortho render of the head (fixed pixel size, viewport-
+        # centred). The HERO's is taken by the FRONTEND generator (RCGeneratePortrait -> FUN_00443480) from a
+        # rect HARD-CODED for the 800x600 frontend: {380,277}-{444,341} (imm32 @0x4435ac/b3/ba/c1). Companions
+        # are generated IN-GAME (FUN_004f25bb) from a rect that follows the live window (portrait_grab_rect).
+        # With MENU_169 the frontend runs at the game res, so the fixed rect grabs empty backbuffer. Mirror
+        # the in-game formula for the window size the frontend will actually have (client size = canvas).
+        # STATUS 2026-09-12: applied + verified on Windows 11 / D3D9 at 1920x1080 with a NEWLY created
+        # party -> leader portrait STILL black (companions fine). Necessary-looking but not sufficient;
+        # kept as an opt-in experiment (DS2FIX_PORTRAIT_RECT=1). See docs/TODO.md item 4 for the RE map.
+        _cw = int(canvas_w or _rw); _ch = int(canvas_h or _rh)
+        _rect = portrait_grab_rect(_cw, _ch)
+        _sites = ((0x4435ac, 380), (0x4435b3, 277), (0x4435ba, 444), (0x4435c1, 341))
+        _pre = [bytes(d[txt_fo(a):txt_fo(a)+4]) for a, _ in _sites]
+        if not portrait_rect:
+            pass   # experimental; off by default
+        elif all(p == v.to_bytes(4, 'little') for p, (_, v) in zip(_pre, _sites)):
+            for (a, _), v in zip(_sites, _rect):
+                d[txt_fo(a):txt_fo(a)+4] = v.to_bytes(4, 'little')
+            log(f"OK: [MENU_169][experimental] leader-portrait grab rect 380,277,444,341 -> {','.join(map(str, _rect))} "
+                f"(frontend window {_cw}x{_ch}; FUN_00443480 @0x4435ac)")
+        else:
+            log(f"WARN: leader-portrait grab-rect site unexpected ({b''.join(_pre).hex()}); skipped")
 
     if dst is not None:
         open(dst, 'wb').write(d)
